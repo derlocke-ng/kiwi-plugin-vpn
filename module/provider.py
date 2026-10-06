@@ -89,6 +89,10 @@ class VpnProvider(TunnelProvider):
             cap_drop=["all"],
             cap_add=["NET_ADMIN"],  # bring the tunnel interface up and route through it
             security_opt=["no-new-privileges"],
+            # Container-root, so gluetun can configure the tun device — and so the
+            # adapter (keep-id) joining this netns matches the proven kiwi-fox
+            # gateway(None)+browser(keep-id) namespace pairing.
+            userns=None,
             tmpfs=["/tmp", "/run"],
             labels={"kiwi-fox.module": self.name, "kiwi-fox.role": "tunnel"},
         )

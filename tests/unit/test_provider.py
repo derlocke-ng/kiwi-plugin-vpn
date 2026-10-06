@@ -56,3 +56,9 @@ def test_gluetun_dir_is_mounted_read_only_when_present(provider, ctx):
     (ctx.state_dir / "gluetun").mkdir()
     spec = provider.tunnel_spec(ctx)
     assert any(dst == "/gluetun" and "ro" in opts for _src, dst, opts in spec.volumes)
+
+
+def test_tunnel_runs_as_container_root_for_the_tun_device(provider, ctx):
+    # userns=None matches the proven gateway(None)+browser(keep-id) netns pairing,
+    # and gluetun needs container-root to configure the tunnel.
+    assert provider.tunnel_spec(ctx, lease="se").userns is None
