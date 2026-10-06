@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kiwi-plugin-vpn"
+version = "0.1.0"
+description = "exit through a WireGuard/OpenVPN tunnel (gluetun) — a kiwi-fox provider module"
+requires-python = ">=3.12"
+license = { text = "GPL-3.0-or-later" }
+
+# This is a kiwi-fox provider module, installed into kiwi-fox's modules_dir by
+# install.sh (through kiwi-updater), NOT a pip package. kiwi-fox is a runtime
+# prerequisite the module imports; it is not a pip dependency here. pyproject
+# exists only for the dev tooling below.
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit"]
+pythonpath = ["."]

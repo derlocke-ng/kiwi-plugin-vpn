@@ -1,0 +1,23 @@
+# kiwi.manifest — app metadata for kiwi-updater
+NAME=kiwi-plugin-vpn
+DESCRIPTION=exit through a WireGuard/OpenVPN tunnel (gluetun) — a kiwi-fox provider module
+VERSION=0.1.0
+AUTHOR=derlocke-ng
+HOMEPAGE=https://github.com/derlocke-ng/kiwi-plugin-vpn
+LICENSE=GPL-3.0-or-later
+
+# A provider module for kiwi-fox: installed into kiwi-fox's modules directory,
+# not a standalone app. No bin, no GUI — kiwi-fox manages its lifecycle.
+COMPONENTS=module
+CATEGORY=Security
+TAGS=kiwi-fox provider vpn gluetun wireguard openvpn socks5 podman
+
+SCOPES=user
+
+ABOUT=README.md
+
+# Checked with `command -v` before installing. The provider image is built or
+# pulled by `kiwi-fox setup` (or `kiwi-fox module setup vpn`), not here.
+DEPENDS=kiwi-fox podman
+
+INSTALLER=install.sh

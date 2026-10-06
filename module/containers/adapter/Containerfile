@@ -1,0 +1,12 @@
+# kiwi-fox vpn provider — the SOCKS5 adapter sidecar.
+# A tiny microsocks that runs in gluetun's network namespace, so its SOCKS5 rides
+# the tunnel while being reachable on the providers bridge at gluetun's address.
+# Built by `kiwi-fox module setup vpn` as kiwi-fox/vpn-adapter:latest.
+FROM docker.io/library/alpine:3.20
+
+RUN apk add --no-cache microsocks
+
+# The listen port is passed as the single argument (kiwi-fox passes socks_port).
+# -i 0.0.0.0 so the shared-netns tunnel address accepts it; no auth, because the
+# only thing that can reach it is the gateway, which permits exactly this address.
+ENTRYPOINT ["sh", "-c", "exec microsocks -i 0.0.0.0 -p \"${1:-1080}\"", "microsocks"]
