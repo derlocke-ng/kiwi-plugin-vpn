@@ -7,7 +7,7 @@ bridge at gluetun's address. Adapting the tunnel into plain SOCKS5 is the module
 
 A VPN subscription is required. Its settings — the service provider, the protocol,
 the keys/credentials, server selection — are gluetun's own environment variables and
-files, given once and kept in the module's state directory, not per profile:
+files, given once and kept in the module's state directory, not per exit:
 
     ~/.local/share/kiwi-proxy/modules-state/vpn/
         vpn.json          {"VPN_SERVICE_PROVIDER": "mullvad", "VPN_TYPE": "wireguard", ...}
@@ -32,7 +32,7 @@ MANIFEST = ProviderManifest(
     name="vpn",
     title="VPN (gluetun)",
     description="exit through a WireGuard/OpenVPN tunnel",
-    version="0.2.0",
+    version="0.2.1",
     image=GLUETUN_IMAGE,
     socks_port=SOCKS_PORT,
     auth="none",

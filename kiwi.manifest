@@ -1,7 +1,7 @@
 # kiwi.manifest — app metadata for kiwi-updater
 NAME=kiwi-plugin-vpn
 DESCRIPTION=exit through a WireGuard/OpenVPN tunnel (gluetun) — a kiwi-proxy provider module
-VERSION=0.2.0
+VERSION=0.2.1
 AUTHOR=derlocke-ng
 HOMEPAGE=https://github.com/derlocke-ng/kiwi-plugin-vpn
 LICENSE=GPL-3.0-or-later
