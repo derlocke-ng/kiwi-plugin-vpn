@@ -1,5 +1,5 @@
 .PHONY: test lint fmt setup install
-# kiwi-fox must be importable for the tests: a sibling checkout, or KIWI_FOX_SRC.
+# kiwi-proxy must be importable for the tests: a sibling checkout, or KIWI_PROXY_SRC.
 PY := $(shell [ -x .venv/bin/python ] && echo .venv/bin/python || echo python3)
 export PYTHONPATH := .
 
