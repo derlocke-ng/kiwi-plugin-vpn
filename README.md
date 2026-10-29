@@ -23,7 +23,7 @@ kiwi-proxy module setup vpn     # pulls gluetun, builds kiwi-proxy/vpn-adapter:l
 ## Configure (once)
 
 gluetun is configured with its own environment variables and files, kept in the
-module's state directory so they are not per profile and never appear in
+module's state directory so they are not per exit and never appear in
 `podman inspect`:
 
 ```
@@ -67,7 +67,7 @@ microsocks adapter  (SOCKS5 0.0.0.0:1080, rides the tunnel)
 ```
 
 The adapter is removed before gluetun on teardown (it joins gluetun's netns). A
-shared tunnel serves every profile on the same lease and is torn down once no
+shared tunnel serves every exit on the same lease and is torn down once no
 running gateway still uses it.
 
 ## Status

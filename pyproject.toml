@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kiwi-plugin-vpn"
-version = "0.2.0"
+version = "0.2.1"
 description = "exit through a WireGuard/OpenVPN tunnel (gluetun) — a kiwi-proxy provider module"
 requires-python = ">=3.12"
 license = { text = "GPL-3.0-or-later" }

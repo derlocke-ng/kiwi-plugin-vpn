@@ -6,6 +6,12 @@ latest tag matching `^v?[0-9]+(\.[0-9]+){0,3}$`.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-29
+
+### Changed
+- Wording: kiwi-proxy works per exit, not per kiwi-fox profile, and the module's
+  texts now say so.
+
 ## [0.2.0] - 2026-10-29
 
 ### Changed
