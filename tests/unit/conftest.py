@@ -1,5 +1,5 @@
-"""Exercise the module exactly as kiwi-fox will: load module/provider.py by file
-path, against a sibling kiwi-fox checkout (or KIWI_FOX_SRC). If kiwi-fox is not
+"""Exercise the module exactly as kiwi-proxy will: load module/provider.py by file
+path, against a sibling kiwi-proxy checkout (or KIWI_PROXY_SRC). If kiwi-proxy is not
 present the whole module is skipped, so the tests stay runnable in CI without it.
 """
 
@@ -15,23 +15,23 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 
 
-def _find_kiwi_fox_src() -> Path | None:
-    env = os.environ.get("KIWI_FOX_SRC")
+def _find_kiwi_proxy_src() -> Path | None:
+    env = os.environ.get("KIWI_PROXY_SRC")
     candidates = [Path(env)] if env else []
-    candidates += [REPO.parent / "kiwi-fox" / "src", Path.home() / "kiwi-fox" / "src"]
+    candidates += [REPO.parent / "kiwi-proxy" / "src", Path.home() / "kiwi-proxy" / "src"]
     for c in candidates:
-        if (c / "kiwi_fox" / "core" / "providers" / "base.py").exists():
+        if (c / "kiwi_proxy" / "providers" / "base.py").exists():
             return c
     return None
 
 
-_src = _find_kiwi_fox_src()
+_src = _find_kiwi_proxy_src()
 if _src and str(_src) not in sys.path:
     sys.path.insert(0, str(_src))
 
 pytest.importorskip(
-    "kiwi_fox.core.providers.base",
-    reason="kiwi-fox not found; clone it beside this repo or set KIWI_FOX_SRC",
+    "kiwi_proxy.providers.base",
+    reason="kiwi-proxy not found; clone it beside this repo or set KIWI_PROXY_SRC",
 )
 
 
@@ -61,13 +61,13 @@ def manifest(module):
 
 @pytest.fixture
 def ctx(manifest, tmp_path):
-    from kiwi_fox.core.providers.base import ProviderContext
+    from kiwi_proxy.providers.base import ProviderContext
 
     return ProviderContext(
         name=manifest.name,
         module_dir=REPO / "module",
         state_dir=tmp_path,
         network="kf-providers",
-        image=manifest.image or f"kiwi-fox/{manifest.name}:latest",
+        image=manifest.image or f"kiwi-proxy/{manifest.name}:latest",
         socks_port=manifest.socks_port,
     )

@@ -1,11 +1,11 @@
-"""The vpn (gluetun) provider against the real kiwi-fox contract."""
+"""The vpn (gluetun) provider against the real kiwi-proxy contract."""
 
 from __future__ import annotations
 
 import json
 
-from kiwi_fox.core import podman
-from kiwi_fox.core.providers.base import Provider, TunnelProvider
+from kiwi_proxy import podman
+from kiwi_proxy.providers.base import Provider, TunnelProvider
 
 
 def test_manifest(manifest):
@@ -34,7 +34,7 @@ def test_adapter_rides_the_tunnel_netns(provider, ctx):
     tunnel = ctx.container_name("se")
     adapter = provider.adapter_spec(ctx, tunnel, lease="se")
     assert adapter.network == f"container:{tunnel}"
-    assert adapter.image == "kiwi-fox/vpn-adapter:latest"
+    assert adapter.image == "kiwi-proxy/vpn-adapter:latest"
     assert adapter.args == ["1080"]
     args = podman.spec_args(adapter)
     assert "--privileged" not in args

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# install.sh — kiwi-plugin-vpn, a kiwi-fox provider module.
+# install.sh — kiwi-plugin-vpn, a kiwi-proxy provider module.
 #
-# Installs the module payload (module/) into kiwi-fox's modules directory, where
-# kiwi-fox discovers it. User scope only: rootless, nothing outside $HOME.
+# Installs the module payload (module/) into kiwi-proxy's modules directory, where
+# kiwi-proxy discovers it. User scope only: rootless, nothing outside $HOME.
 #
 #   KIWI_SCOPE   user      (anything else is a no-op)
 #   KIWI_ACTION  install | update | uninstall
@@ -13,7 +13,9 @@ MODULE="vpn"
 KIWI_SCOPE="${KIWI_SCOPE:-user}"
 KIWI_ACTION="${KIWI_ACTION:-${1:-install}}"
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DATA="${XDG_DATA_HOME:-$HOME/.local/share}/kiwi-fox"
+DATA="${XDG_DATA_HOME:-$HOME/.local/share}/kiwi-proxy"
+# Where kiwi-fox kept modules before the proxy engine moved to kiwi-proxy.
+LEGACY="${XDG_DATA_HOME:-$HOME/.local/share}/kiwi-fox"
 DEST="$DATA/modules/$MODULE"
 STATE="$DATA/modules-state/$MODULE"
 
@@ -23,11 +25,20 @@ if [[ "$KIWI_SCOPE" != user ]]; then
 fi
 
 do_install() {
+    # A copy kiwi-fox loaded before the split imports kiwi_fox, which no longer
+    # carries the contract: drop it. Its state (VPN config, identities) is not
+    # per-version, so it comes along unless this module already has its own.
+    rm -rf "$LEGACY/modules/$MODULE"
+    if [[ -d "$LEGACY/modules-state/$MODULE" && ! -e "$STATE" ]]; then
+        mkdir -p "$(dirname "$STATE")"
+        cp -a "$LEGACY/modules-state/$MODULE" "$STATE"
+        echo "took the state kiwi-fox kept for '$MODULE' ($LEGACY/modules-state/$MODULE)"
+    fi
     rm -rf "$DEST"
     mkdir -p "$DEST"
     cp -r "$SRC/module/." "$DEST/"
     echo "installed provider module '$MODULE' to $DEST"
-    echo "build its image with: kiwi-fox module setup $MODULE   (or: kiwi-fox setup)"
+    echo "build its image with: kiwi-proxy module setup $MODULE   (or: kiwi-proxy setup)"
 }
 
 do_uninstall() {

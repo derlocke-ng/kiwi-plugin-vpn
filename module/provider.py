@@ -9,7 +9,7 @@ A VPN subscription is required. Its settings — the service provider, the proto
 the keys/credentials, server selection — are gluetun's own environment variables and
 files, given once and kept in the module's state directory, not per profile:
 
-    ~/.local/share/kiwi-fox/modules-state/vpn/
+    ~/.local/share/kiwi-proxy/modules-state/vpn/
         vpn.json          {"VPN_SERVICE_PROVIDER": "mullvad", "VPN_TYPE": "wireguard", ...}
         gluetun/          mounted read-only at /gluetun (e.g. a wireguard.conf)
 
@@ -21,8 +21,8 @@ from __future__ import annotations
 
 import json
 
-from kiwi_fox.core.models import ContainerSpec, Lease, ProviderManifest
-from kiwi_fox.core.providers.base import TunnelProvider
+from kiwi_proxy.models import ContainerSpec, Lease, ProviderManifest
+from kiwi_proxy.providers.base import TunnelProvider
 
 GLUETUN_IMAGE = "docker.io/qmcgaw/gluetun:latest"
 SOCKS_PORT = 1080
@@ -90,15 +90,15 @@ class VpnProvider(TunnelProvider):
             cap_add=["NET_ADMIN"],  # bring the tunnel interface up and route through it
             security_opt=["no-new-privileges"],
             # Container-root, so gluetun can configure the tun device — and so the
-            # adapter (keep-id) joining this netns matches the proven kiwi-fox
+            # adapter (keep-id) joining this netns matches the proven kiwi-proxy
             # gateway(None)+browser(keep-id) namespace pairing.
             userns=None,
             tmpfs=["/tmp", "/run"],
-            labels={"kiwi-fox.module": self.name, "kiwi-fox.role": "tunnel"},
+            labels={"kiwi-proxy.module": self.name, "kiwi-proxy.role": "tunnel"},
         )
 
     def tunnel_ready(self, ctx, container):
-        from kiwi_fox.core import podman
+        from kiwi_proxy import podman
 
         logs = podman.logs(container, tail=200).lower()
         # gluetun prints one of these once the tunnel is established.

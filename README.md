@@ -1,13 +1,14 @@
 # kiwi-plugin-vpn
 
-A [kiwi-fox](https://github.com/derlocke-ng/kiwi-fox) provider module: exit a
-browser identity through a **WireGuard/OpenVPN tunnel**, using
+A [kiwi-proxy](https://github.com/derlocke-ng/kiwi-proxy) provider module: send an
+exit — a kiwi-fox browser identity, kiwi-pentesting's tools, a SOCKS5 port on
+the host — through a **WireGuard/OpenVPN tunnel**, using
 [gluetun](https://github.com/qdm12/gluetun).
 
 gluetun supports a long list of VPN providers but does not itself speak SOCKS5, so
 this module runs gluetun on the `kf-providers` bridge and a tiny **microsocks
 adapter in gluetun's network namespace** — SOCKS5 that rides the tunnel and is
-reachable on the bridge at gluetun's address. (This is kiwi-fox's `TunnelProvider`
+reachable on the bridge at gluetun's address. (This is kiwi-proxy's `TunnelProvider`
 pattern; the same shape as kiwi-plugin-myst.)
 
 A VPN subscription is required.
@@ -16,7 +17,7 @@ A VPN subscription is required.
 
 ```sh
 kiwi install kiwi-plugin-vpn
-kiwi-fox module setup vpn     # pulls gluetun, builds kiwi-fox/vpn-adapter:latest
+kiwi-proxy module setup vpn     # pulls gluetun, builds kiwi-proxy/vpn-adapter:latest
 ```
 
 ## Configure (once)
@@ -26,7 +27,7 @@ module's state directory so they are not per profile and never appear in
 `podman inspect`:
 
 ```
-~/.local/share/kiwi-fox/modules-state/vpn/
+~/.local/share/kiwi-proxy/modules-state/vpn/
     vpn.json        provider settings as JSON, e.g.
                     {
                       "VPN_SERVICE_PROVIDER": "mullvad",
@@ -41,7 +42,7 @@ module's state directory so they are not per profile and never appear in
 Every `UPPER_CASE` key in `vpn.json` is passed straight to gluetun — see the
 [gluetun wiki](https://github.com/qdm12/gluetun-wiki) for the full set (provider
 names, `SERVER_COUNTRIES`, WireGuard keys, OpenVPN credentials, …). The optional
-`leases` list is what `kiwi-fox module leases vpn` shows and selects with
+`leases` list is what `kiwi-proxy module leases vpn` shows and selects with
 `--lease`; a lease (or `--country`) is passed to gluetun as `SERVER_COUNTRIES`
 verbatim, so use gluetun's own naming.
 
@@ -50,7 +51,8 @@ Keep real keys out of git — the module state directory is outside this repo.
 ## Use
 
 ```sh
-kiwi-fox module leases vpn
+kiwi-proxy module leases vpn
+kiwi-proxy add work --module vpn --lease Sweden   # an exit: `kiwi-proxy up work`, --expose PORT for the host
 kiwi-fox new work --module vpn --lease Sweden
 kiwi-fox run work
 ```
@@ -58,7 +60,7 @@ kiwi-fox run work
 ## How it fits
 
 ```
-gluetun container ──────── kf-providers bridge ── kiwi-fox gateway ── browser
+gluetun container ──────── kf-providers bridge ── kiwi-proxy gateway ── browser
   tunnel up, /dev/net/tun                          permits only <gluetun-ip>:1080
      ▲ shares netns
 microsocks adapter  (SOCKS5 0.0.0.0:1080, rides the tunnel)
@@ -71,14 +73,14 @@ running gateway still uses it.
 ## Status
 
 The wiring, lifecycle, and gluetun/adapter containers are complete and unit-tested
-against the kiwi-fox contract. Bringing a tunnel up end-to-end needs a real VPN
+against the kiwi-proxy contract. Bringing a tunnel up end-to-end needs a real VPN
 subscription and podman, so validate `module up vpn` on your own machine after
 configuring `vpn.json`.
 
 ## Development
 
 ```sh
-make setup && make test     # needs a kiwi-fox checkout beside this repo (or KIWI_FOX_SRC)
+make setup && make test     # needs a kiwi-proxy checkout beside this repo (or KIWI_PROXY_SRC)
 make lint
 ```
 
