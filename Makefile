@@ -1,4 +1,4 @@
-.PHONY: test lint fmt setup install
+.PHONY: test smoke lint fmt setup install
 # kiwi-proxy must be importable for the tests: a sibling checkout, or KIWI_PROXY_SRC.
 PY := $(shell [ -x .venv/bin/python ] && echo .venv/bin/python || echo python3)
 export PYTHONPATH := .
@@ -21,3 +21,8 @@ fmt:
 
 install:
 	./install.sh install
+
+# Build the module's image as `kiwi-proxy module setup vpn` does and run it once
+# (tests/smoke/images.sh) — what images.yml does, from a clean cache there.
+smoke:
+	bash tests/smoke/images.sh $(BUILD_FLAGS)
