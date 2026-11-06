@@ -6,6 +6,15 @@ latest tag matching `^v?[0-9]+(\.[0-9]+){0,3}$`.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-07
+
+### Fixed
+- The adapter image did not build: `apk add microsocks` found no package, because
+  microsocks is in no stable Alpine repository, only in edge/testing. It is now
+  built from its v1.0.5 release tag, checked against the commit, in a builder
+  stage; the final image is Alpine plus the one binary. Nothing in CI builds the
+  module's images, so this is the first time it was built.
+
 ## [0.2.1] - 2026-10-29
 
 ### Changed

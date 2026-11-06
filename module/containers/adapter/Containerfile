@@ -2,9 +2,20 @@
 # A tiny microsocks that runs in gluetun's network namespace, so its SOCKS5 rides
 # the tunnel while being reachable on the providers bridge at gluetun's address.
 # Built by `kiwi-proxy module setup vpn` as kiwi-proxy/vpn-adapter:latest.
-FROM docker.io/library/alpine:3.20
+#
+# microsocks is in no stable Alpine repository (only edge/testing, which is not
+# pinned and may drop it), so it is built from its release tag here, checked
+# against the commit, and only the binary goes into the final image.
+FROM docker.io/library/alpine:3.20 AS build
+ARG MICROSOCKS_TAG=v1.0.5
+ARG MICROSOCKS_COMMIT=98421a21c4adc4c77c0cf3a5d650cc28ad3e0107
+RUN apk add --no-cache build-base git \
+ && git clone --depth 1 --branch "$MICROSOCKS_TAG" https://github.com/rofl0r/microsocks /src \
+ && test "$(git -C /src rev-parse HEAD)" = "$MICROSOCKS_COMMIT" \
+ && make -C /src
 
-RUN apk add --no-cache microsocks
+FROM docker.io/library/alpine:3.20
+COPY --from=build /src/microsocks /usr/local/bin/microsocks
 
 # The listen port is passed as the single argument (kiwi-proxy passes socks_port).
 # -i 0.0.0.0 so the shared-netns tunnel address accepts it; no auth, because the
