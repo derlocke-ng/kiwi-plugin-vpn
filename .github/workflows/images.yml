@@ -1,0 +1,18 @@
+# images — the provider image builds and runs.
+#
+# 0.2.1's adapter image did not build (`apk add microsocks`: Alpine does not carry
+# it) and nothing noticed until a desktop built it: the unit tests never touch a
+# Containerfile. This builds the image from a clean cache and runs it once
+# (tests/smoke/images.sh), on every push and pull request.
+name: images
+on:
+  push:
+  pull_request:
+
+jobs:
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n tests/smoke/images.sh
+      - run: bash tests/smoke/images.sh --no-cache
