@@ -375,3 +375,54 @@ def test_an_openvpn_connection_brings_its_saved_login(module, monkeypatch):
     assert module.check_config(text) == "OpenVPN · 1 server, UDP"
     secret_ok["v"] = False  # no right to the password: the config still asks
     assert module.needs_login(module.nm_config("work"))
+
+
+@pytest.mark.parametrize(
+    ("log", "outcome"),
+    [
+        ("[openvpn] Initialization Sequence Completed", True),
+        ("[openvpn] AUTH: Received control message: AUTH_FAILED", "LoginRefused"),
+        (
+            "[openvpn] All connections have been connect-retry-max (1) times unsuccessful",
+            "ServerGone",
+        ),
+        ("[openvpn] TLS Error: TLS handshake failed\n...Initialization Sequence Completed", True),
+        ("[openvpn] Attempting to establish TCP connection", False),
+    ],
+)
+def test_gluetuns_log_says_up_refused_or_gone(provider, module, ctx, monkeypatch, log, outcome):
+    monkeypatch.setattr(podman, "logs", lambda name, tail=200: log)
+    if isinstance(outcome, bool):
+        assert provider.tunnel_ready(ctx, "c") is outcome
+    else:
+        with pytest.raises(getattr(module, outcome)):
+            provider.tunnel_ready(ctx, "c")
+
+
+def test_a_server_that_does_not_answer_is_left_for_another(
+    provider, module, ctx, stored, monkeypatch
+):
+    from kiwi_proxy.providers.base import TunnelProvider
+
+    calls = []
+
+    def up(self, ctx, *, lease=None, country=None):
+        calls.append(lease)
+        if len(calls) < 3:
+            raise module.ServerGone("the VPN server did not answer")
+        return "up"
+
+    monkeypatch.setattr(TunnelProvider, "up", up)
+    stored["e1/vpnconfig"] = OVPN  # three servers
+    assert provider.up(ctx, lease="e1") == "up" and len(calls) == 3
+    calls.clear()
+    monkeypatch.setattr(
+        TunnelProvider,
+        "up",
+        lambda self, ctx, **k: (_ for _ in ()).throw(module.ServerGone("gone")),
+    )
+    with pytest.raises(ProviderError, match=r"did not answer|gone \(3 tried\)"):
+        provider.up(ctx, lease="e1")
+    stored["e2/vpnconfig"] = OVPN.replace("remote 203.0.113.2 1194\nremote 203.0.113.3 80\n", "")
+    with pytest.raises(ProviderError, match=r"\(1 tried\)"):
+        provider.up(ctx, lease="e2")  # one server: nothing else to try

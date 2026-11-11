@@ -6,6 +6,17 @@ latest tag matching `^v?[0-9]+(\.[0-9]+){0,3}$`.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-11
+
+### Fixed
+- **A refused login says so at once** ("the VPN refused the login (AUTH_FAILED)")
+  instead of a two-minute timeout: 3 s on the VM.
+- **An OpenVPN server that does not answer is left for another.** gluetun
+  connects to a config's first server only; when it does not answer, the exit
+  starts again with another first, up to three. A config with one server says
+  "the VPN server did not answer" (22 s on the VM instead of a timeout).
+- gluetun's own VPN restarts stay off, with why (measured on the VM).
+
 ## [0.6.0] - 2026-11-11
 
 ### Added

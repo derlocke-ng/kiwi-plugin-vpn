@@ -45,7 +45,7 @@ MANIFEST = ProviderManifest(
     name="vpn",
     title="VPN",
     description="exit through your WireGuard or OpenVPN config",
-    version="0.6.0",
+    version="0.6.1",
     image=GLUETUN_IMAGE,
     auth="none",
     needs_account=True,
@@ -487,6 +487,24 @@ def _key_in_use(lease: str, key: tuple[str, frozenset[str]]) -> str | None:
     return None
 
 
+class LoginRefused(ProviderError):
+    pass
+
+
+class ServerGone(ProviderError):
+    pass
+
+
+# gluetun's log when an OpenVPN server does not answer (it then waits and tries
+# the same one again).
+SERVER_GONE = (
+    "Exiting due to fatal error",
+    "All connections have been connect-retry-max",
+    "TLS Error: TLS handshake failed",
+    "TLS key negotiation failed",
+)
+
+
 # -------------------------------------------------------------------- provider
 class VpnProvider(TunnelProvider):
     manifest = MANIFEST
@@ -555,8 +573,34 @@ class VpnProvider(TunnelProvider):
         )
 
     def tunnel_ready(self, ctx, container):
+        """Up once OpenVPN or WireGuard says so. While waiting, gluetun's log says
+        sooner than a timeout when it will not come up: a refused login, or an
+        OpenVPN server that does not answer (up() then tries another)."""
         logs = podman.logs(container, tail=200)
-        return any(mark in logs for mark in READY_MARKS)
+        if any(mark in logs for mark in READY_MARKS):
+            return True
+        if "AUTH_FAILED" in logs:
+            raise LoginRefused(
+                "the VPN refused the login (AUTH_FAILED): check the username and password"
+            )
+        if any(sign in logs for sign in SERVER_GONE):
+            raise ServerGone("the VPN server did not answer")
+        return False
+
+    def up(self, ctx, *, lease=None, country=None, **kw):
+        """An OpenVPN config lists many servers and gluetun connects to the first:
+        when that one does not answer, start again with another first (prepare()
+        shuffles them), up to three servers."""
+        tried = 0
+        while True:
+            try:
+                return super().up(ctx, lease=lease, country=country, **kw)
+            except ServerGone as exc:
+                tried += 1
+                text = secrets.lookup(lease, kind=CONFIG_KIND) if lease else None
+                many = text is not None and len(re.findall(r"(?m)^\s*remote\s", text)) > 1
+                if not many or tried >= 3:
+                    raise ProviderError(f"{exc} ({tried} tried)") from exc
 
     def down(self, ctx, *, lease=None):
         super().down(ctx, lease=lease)
