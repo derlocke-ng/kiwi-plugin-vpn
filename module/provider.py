@@ -45,7 +45,7 @@ MANIFEST = ProviderManifest(
     name="vpn",
     title="VPN",
     description="exit through your WireGuard or OpenVPN config",
-    version="0.5.0",
+    version="0.5.1",
     image=GLUETUN_IMAGE,
     auth="none",
     needs_account=True,
@@ -386,15 +386,24 @@ def secret_name(lease: str) -> str:
     return f"kf-vpn-{lease[:12]}"
 
 
-def wireguard_key(text: str) -> str | None:
-    keys = _wg_values(text, "PrivateKey") if kind_of(text) == "wireguard" else []
-    return keys[0] if keys else None
+def wireguard_key(text: str) -> tuple[str, frozenset[str]] | None:
+    """(the private key, the servers' public keys) of a WireGuard config."""
+    if kind_of(text) != "wireguard":
+        return None
+    keys = _wg_values(text, "PrivateKey")
+    return (keys[0], frozenset(_wg_values(text, "PublicKey"))) if keys else None
 
 
-def _key_in_use(lease: str, key: str) -> str | None:
-    """The name of another VPN exit that is up with this WireGuard key. A key
-    works in one place at a time: two tunnels with it take turns at the server
-    and break each other."""
+def _clash(a: tuple[str, frozenset[str]], b: tuple[str, frozenset[str]] | None) -> bool:
+    """The same key towards the same server: that server follows whichever tunnel
+    spoke last, and both break. The same key on other servers is fine (a provider's
+    per-server configs share one key)."""
+    return b is not None and a[0] == b[0] and bool(a[1] & b[1])
+
+
+def _key_in_use(lease: str, key: tuple[str, frozenset[str]]) -> str | None:
+    """The name of another VPN exit that is up with this WireGuard key towards the
+    same server."""
     from kiwi_proxy import exits, paths
 
     for c in podman.ps(all_=False, labels={paths.MODULE_LABEL: "vpn", paths.ROLE_LABEL: "tunnel"}):
@@ -403,7 +412,7 @@ def _key_in_use(lease: str, key: str) -> str | None:
             continue
         text = secrets.lookup(other, kind=CONFIG_KIND)
         try:
-            if text and wireguard_key(text) == key:
+            if text and _clash(key, wireguard_key(text)):
                 return exits.load(other).name
         except (ProviderError, exits.ExitError):
             continue
@@ -439,8 +448,9 @@ class VpnProvider(TunnelProvider):
             )
         if (key := wireguard_key(text)) and (other := _key_in_use(lease, key)):
             raise ProviderError(
-                f"exit {other!r} is up with the same WireGuard key; a key works in "
-                "one place at a time (take it down, or give this exit its own config)"
+                f"exit {other!r} is up with the same WireGuard key to the same server; "
+                "they would take turns and break each other (take it down, or give "
+                "this exit a config of its own)"
             )
         kind, prepared, extra = prepare(text)
         name = secret_name(lease)

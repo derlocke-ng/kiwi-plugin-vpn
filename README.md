@@ -36,10 +36,11 @@ as you like; each runs its own tunnel.
   only reaches a few subnets is refused.
 - **The config is kept as the exit's secret** (the keyring, or kiwi-proxy's
   secret files), never in `podman inspect`. Deleting the exit deletes it.
-- **One WireGuard key, one place.** Two tunnels with the same key take turns at
-  the server and break each other, so an exit does not start while another is up
-  with its key. A key also in use on another computer breaks the same way: give
-  each exit a config (a peer) of its own.
+- **One WireGuard key, one server at a time.** Two tunnels with the same key to
+  the same server take turns there and break each other, so an exit does not
+  start while another is up that way. The same key on other servers is fine (a
+  provider's per-server configs), but a key also in use on another computer, to
+  the same server, breaks the same way.
 - **DNS and ad-blocking are kiwi-proxy's**, per exit, like every exit's.
 - An OpenVPN config that asks for a username and password, and a host SOCKS5
   port on a VPN exit, are not supported yet.

@@ -151,10 +151,15 @@ def test_a_wireguard_key_up_on_another_exit_is_refused(provider, module, ctx, st
         "ps",
         lambda all_=True, labels=None: [{"Labels": {paths.LEASE_LABEL: other.id}}],
     )
-    with pytest.raises(ProviderError, match="'home' is up with the same WireGuard key"):
+    with pytest.raises(
+        ProviderError, match="'home' is up with the same WireGuard key to the same server"
+    ):
         provider.tunnel_spec(ctx, lease="exit-4")
-    stored["exit-4/vpnconfig"] = WG.replace("aGVsbG8gd29ybGQ=", "b3RoZXIga2V5")  # its own key
+    # the same key towards another server (a provider's per-server configs): fine
     monkeypatch.setattr(module.socket, "gethostbyname", lambda h: "198.51.100.4")
+    stored["exit-4/vpnconfig"] = WG.replace("d29ybGQgaGVsbG8=", "YW5vdGhlciBzZXJ2ZXI=")
+    assert provider.tunnel_spec(ctx, lease="exit-4").env["VPN_TYPE"] == "wireguard"
+    stored["exit-4/vpnconfig"] = WG.replace("aGVsbG8gd29ybGQ=", "b3RoZXIga2V5")  # its own key
     assert provider.tunnel_spec(ctx, lease="exit-4").env["VPN_TYPE"] == "wireguard"
 
 

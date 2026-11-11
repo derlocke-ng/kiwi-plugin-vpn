@@ -6,6 +6,13 @@ latest tag matching `^v?[0-9]+(\.[0-9]+){0,3}$`.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-11
+
+### Fixed
+- The same WireGuard key is refused only towards the same server. 0.4.0 refused
+  any second exit with the key, which blocked a provider's per-server configs
+  (they share one key) from running side by side.
+
 ## [0.5.0] - 2026-11-11
 
 ### Added
