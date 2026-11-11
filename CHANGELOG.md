@@ -6,6 +6,21 @@ latest tag matching `^v?[0-9]+(\.[0-9]+){0,3}$`.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-11
+
+### Added
+- **Import from NetworkManager.** Its WireGuard and OpenVPN connections are
+  offered (`kiwi-proxy module sources vpn`, Import… in Kiwi Proxy). WireGuard is
+  built from the connection's settings and secrets over D-Bus (NetworkManager
+  hands the key over in your desktop session, and says so when it does not);
+  OpenVPN is exported, its certificate files inlined, NetworkManager's quotes,
+  user, group and scripts left out. Needs kiwi-proxy 0.15.0.
+
+### Fixed
+- An OpenVPN config whose client certificate has expired is refused when it is
+  added, with the day it expired, instead of a tunnel that times out after two
+  minutes (seen on the VM: a Riseup connection from early November).
+
 ## [0.4.0] - 2026-11-11
 
 ### Added

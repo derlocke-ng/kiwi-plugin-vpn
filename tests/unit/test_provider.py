@@ -4,6 +4,7 @@ the exit's gateway joins (TCP and UDP through the VPN)."""
 from __future__ import annotations
 
 import random
+import subprocess
 
 import pytest
 from kiwi_proxy import podman, secrets
@@ -178,3 +179,148 @@ def test_a_host_socks5_port_is_published_on_the_tunnel(provider, ctx, stored):
     stored[f"{other.id}/vpnconfig"] = OVPN
     plain = provider.tunnel_spec(ctx, lease=other.id)
     assert plain.publish == [] and "FIREWALL_INPUT_PORTS" not in plain.env
+
+
+# ------------------------------------------------------ NetworkManager import
+def _v(t, d):
+    return {"type": t, "data": d}
+
+
+NM_SETTINGS = {
+    "wireguard": {
+        "mtu": _v("u", 1412),
+        "peers": _v(
+            "aa{sv}",
+            [
+                {
+                    "public-key": _v("s", "UGVlcktleQ=="),
+                    "endpoint": _v("s", "94.16.108.143:51820"),
+                    "allowed-ips": _v("as", ["0.0.0.0/0", "::/0"]),
+                    "persistent-keepalive": _v("u", 25),
+                }
+            ],
+        ),
+    },
+    "ipv4": {
+        "address-data": _v("aa{sv}", [{"address": _v("s", "10.8.0.5"), "prefix": _v("u", 24)}])
+    },
+    "ipv6": {"address-data": _v("aa{sv}", [])},
+}
+NM_SECRETS = {
+    "wireguard": {
+        "private-key": _v("s", "UHJpdmF0ZUtleQ=="),
+        "peers": _v(
+            "aa{sv}", [{"public-key": _v("s", "UGVlcktleQ=="), "preshared-key": _v("s", "UFNL")}]
+        ),
+    }
+}
+
+
+def test_the_connection_list_keeps_names_with_colons(module):
+    text = "u-1:wireguard:home\\: vpn\nu-2:vpn:riseup\nu-3:802-3-ethernet:wired\n"
+    assert module.parse_nm_list(text) == [
+        ("u-1", "wireguard", "home: vpn"),
+        ("u-2", "vpn", "riseup"),
+        ("u-3", "802-3-ethernet", "wired"),
+    ]
+
+
+def test_a_wireguard_connection_becomes_a_wg_quick_config(module):
+    text = module.wireguard_from_nm(NM_SETTINGS, NM_SECRETS)
+    assert module.check_config(text) == "WireGuard · 94.16.108.143:51820"
+    for line in (
+        "PrivateKey = UHJpdmF0ZUtleQ==",
+        "Address = 10.8.0.5/24",
+        "MTU = 1412",
+        "PublicKey = UGVlcktleQ==",
+        "PresharedKey = UFNL",
+        "AllowedIPs = 0.0.0.0/0, ::/0",
+        "Endpoint = 94.16.108.143:51820",
+        "PersistentKeepalive = 25",
+    ):
+        assert line in text.splitlines(), line
+
+
+def test_without_the_key_it_says_so(module):
+    with pytest.raises(ProviderError, match="did not hand over the WireGuard key"):
+        module.wireguard_from_nm(NM_SETTINGS, {"wireguard": {}})
+
+
+def test_an_exported_openvpn_config_is_made_whole(module, tmp_path):
+    (tmp_path / "ca.pem").write_text("-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----\n")
+    (tmp_path / "ta.key").write_text("TA\n")
+    exported = (
+        "client\nremote '203.0.113.1' 1194\nproto 'tcp-client'\nuser nm-openvpn\ngroup nm-openvpn\n"
+        f"ca '{tmp_path}/ca.pem'\ntls-auth {tmp_path}/ta.key 1\nscript-security 2\n"
+    )
+    text = module.openvpn_inline(exported)
+    assert "user " not in text and "group " not in text and "script-security" not in text
+    assert "<ca>\n-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----\n</ca>" in text
+    assert "key-direction 1\n<tls-auth>\nTA\n</tls-auth>" in text
+    assert "remote 203.0.113.1 1194" in text  # NetworkManager's quotes gone
+    assert module.check_config(text) == "OpenVPN · 1 server, TCP"
+    assert module.server_of(text) == ("203.0.113.1", 1194)
+
+
+def test_the_module_offers_what_networkmanager_has(provider, module, ctx, monkeypatch):
+    calls = []
+
+    def run(args, timeout=20):
+        calls.append(args)
+        if args[:2] == ["nmcli", "-t"]:
+            out = (
+                "u-1:wireguard:home\nu-2:vpn:riseup\nu-3:vpn:work-pptp\nu-4:802-3-ethernet:wired\n"
+            )
+        elif args[:3] == ["nmcli", "-g", "vpn.service-type"]:
+            out = (
+                module.OPENVPN_SERVICE
+                if args[-1] == "u-2"
+                else "org.freedesktop.NetworkManager.pptp"
+            )
+        else:
+            out = ""
+        return subprocess.CompletedProcess(args, 0, stdout=out, stderr="")
+
+    monkeypatch.setattr(module, "_run", run)
+    found = provider.config_sources(ctx)
+    assert [(s.id, s.label, s.detail) for s in found] == [
+        ("u-1", "home", "WireGuard"),
+        ("u-2", "riseup", "OpenVPN"),
+    ]
+
+
+def test_an_expired_client_certificate_is_named(module, tmp_path):
+    import datetime as dt
+    import shutil
+
+    if not shutil.which("openssl"):
+        pytest.skip("no openssl")
+    key, cert = tmp_path / "k.pem", tmp_path / "c.pem"
+    subprocess.run(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "ec",
+            "-pkeyopt",
+            "ec_paramgen_curve:prime256v1",
+            "-nodes",
+            "-keyout",
+            str(key),
+            "-out",
+            str(cert),
+            "-days",
+            "1",
+            "-subj",
+            "/CN=kiwi-test",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    conf = OVPN + f"<cert>\n{cert.read_text()}</cert>\n"
+    assert module.cert_expired(conf) is None  # valid today
+    later = dt.datetime.now(dt.UTC) + dt.timedelta(days=400)
+    tomorrow = (dt.datetime.now(dt.UTC) + dt.timedelta(days=1)).date().isoformat()
+    assert module.cert_expired(conf, now=later) == tomorrow  # -days 1: ends a day from now
+    assert module.check_config(conf) == "OpenVPN · 3 servers, TCP"

@@ -20,13 +20,19 @@ A VPN exit is for the internet (WAN): a WireGuard config must route 0.0.0.0/0.
 
 from __future__ import annotations
 
+import datetime as dt
 import ipaddress
+import json
 import random
 import re
+import shutil
 import socket
+import subprocess
+import tempfile
+from pathlib import Path
 
 from kiwi_proxy import podman, secrets
-from kiwi_proxy.models import ContainerSpec, ProviderManifest
+from kiwi_proxy.models import ContainerSpec, Lease, ProviderManifest
 from kiwi_proxy.providers.base import ProviderError, TunnelProvider
 
 GLUETUN_IMAGE = "docker.io/qmcgaw/gluetun:latest"
@@ -39,7 +45,7 @@ MANIFEST = ProviderManifest(
     name="vpn",
     title="VPN",
     description="exit through your WireGuard or OpenVPN config",
-    version="0.4.0",
+    version="0.5.0",
     image=GLUETUN_IMAGE,
     auth="none",
     needs_account=True,
@@ -114,6 +120,10 @@ def check_config(text: str) -> str:
             "the OpenVPN config asks for a username and password; "
             "only configs with their keys inside are supported for now"
         )
+    if expired := cert_expired(text):
+        raise ProviderError(
+            f"the client certificate expired on {expired}; get a fresh config from your VPN"
+        )
     remotes = re.findall(r"(?m)^\s*remote\s+\S+", text)
     proto = re.search(r"(?m)^\s*proto\s+(\w+)", text)
     p = proto.group(1).upper().split("-")[0] if proto else "UDP"
@@ -128,6 +138,31 @@ def server_of(text: str) -> tuple[str, int] | None:
         return (m.group(1), int(m.group(2))) if m else None
     m = re.search(r"(?m)^\s*remote\s+(\S+)(?:\s+(\d+))?", text)
     return (m.group(1), int(m.group(2) or 1194)) if m else None
+
+
+def cert_expired(text: str, *, now: dt.datetime | None = None) -> str | None:
+    """The day an OpenVPN config's own client certificate (<cert>) expired, or None
+    while it is valid (or when there is none, or no openssl to read it)."""
+    m = re.search(r"(?s)<cert>\s*(.*?)\s*</cert>", text)
+    if not m or not shutil.which("openssl"):
+        return None
+    proc = subprocess.run(  # noqa: S603
+        ["openssl", "x509", "-noout", "-enddate"],  # noqa: S607
+        input=m.group(1) + "\n",
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    found = re.search(r"notAfter=(.+)", proc.stdout)
+    if not found:
+        return None
+    try:
+        end = dt.datetime.strptime(found.group(1).strip(), "%b %d %H:%M:%S %Y %Z")
+    except ValueError:
+        return None
+    end = end.replace(tzinfo=dt.UTC)
+    return end.date().isoformat() if end < (now or dt.datetime.now(dt.UTC)) else None
 
 
 def _resolve(host: str) -> str:
@@ -189,6 +224,164 @@ def _host_port(lease: str, env: dict[str, str]) -> tuple[list[str], dict[str, st
     return [gateway.expose_publish(ex)], {paths.EXPOSE_LABEL: ex.expose.address}
 
 
+# ------------------------------------------------------ NetworkManager import
+NM = "org.freedesktop.NetworkManager"
+OPENVPN_SERVICE = "org.freedesktop.NetworkManager.openvpn"
+# NetworkManager's OpenVPN plugin runs openvpn as its own user with its own
+# scripts; none of that exists in gluetun.
+_NM_ONLY = re.compile(r"^\s*(user|group|script-security|up|down|route-up|ipchange)\b")
+_FILE_OPTS = {
+    "ca": "ca",
+    "cert": "cert",
+    "key": "key",
+    "tls-auth": "tls-auth",
+    "tls-crypt": "tls-crypt",
+    "tls-crypt-v2": "tls-crypt-v2",
+}
+
+
+def _run(args: list[str], timeout: int = 20) -> subprocess.CompletedProcess:
+    if not shutil.which(args[0]):
+        raise ProviderError(f"{args[0]} not found: NetworkManager is needed for this")
+    return subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)  # noqa: S603
+
+
+def parse_nm_list(text: str) -> list[tuple[str, str, str]]:
+    """`nmcli -t -e yes -f UUID,TYPE,NAME connection show` -> (uuid, type, name)."""
+    out = []
+    for line in text.splitlines():
+        parts = line.split(":", 2)
+        if len(parts) == 3:
+            out.append((parts[0], parts[1], parts[2].replace("\\:", ":").replace("\\\\", "\\")))
+    return out
+
+
+def nm_sources() -> list[Lease]:
+    """The WireGuard and OpenVPN connections NetworkManager knows here."""
+    proc = _run(["nmcli", "-t", "-e", "yes", "-f", "UUID,TYPE,NAME", "connection", "show"])
+    found = []
+    for uuid, kind, name in parse_nm_list(proc.stdout):
+        if kind == "wireguard":
+            found.append(Lease(id=uuid, label=name, detail="WireGuard"))
+        elif kind == "vpn":
+            service = _run(["nmcli", "-g", "vpn.service-type", "connection", "show", uuid]).stdout
+            if service.strip() == OPENVPN_SERVICE:
+                found.append(Lease(id=uuid, label=name, detail="OpenVPN"))
+    return found
+
+
+def _variant(v):
+    return v.get("data") if isinstance(v, dict) and "type" in v else v
+
+
+def wireguard_from_nm(settings: dict, secrets_: dict) -> str:
+    """A wg-quick config from NetworkManager's settings and secrets (as busctl
+    --json=short gives them: every value a {"type", "data"} variant)."""
+    wg = {k: _variant(v) for k, v in settings.get("wireguard", {}).items()}
+    sec = {k: _variant(v) for k, v in secrets_.get("wireguard", {}).items()}
+    key = sec.get("private-key")
+    if not key:
+        raise ProviderError("NetworkManager did not hand over the WireGuard key")
+    lines = ["[Interface]", f"PrivateKey = {key}"]
+    addrs = []
+    for fam in ("ipv4", "ipv6"):
+        for a in _variant(settings.get(fam, {}).get("address-data", {"data": []})) or []:
+            a = {k: _variant(v) for k, v in a.items()}
+            addrs.append(f"{a['address']}/{a['prefix']}")
+    if addrs:
+        lines.append("Address = " + ", ".join(addrs))
+    if wg.get("mtu"):
+        lines.append(f"MTU = {wg['mtu']}")
+    psk = {}
+    for p in sec.get("peers") or []:
+        p = {k: _variant(v) for k, v in p.items()}
+        if p.get("preshared-key"):
+            psk[p.get("public-key")] = p["preshared-key"]
+    for p in wg.get("peers") or []:
+        p = {k: _variant(v) for k, v in p.items()}
+        lines += ["", "[Peer]", f"PublicKey = {p['public-key']}"]
+        if p.get("public-key") in psk:
+            lines.append(f"PresharedKey = {psk[p['public-key']]}")
+        if p.get("allowed-ips"):
+            lines.append("AllowedIPs = " + ", ".join(p["allowed-ips"]))
+        if p.get("endpoint"):
+            lines.append(f"Endpoint = {p['endpoint']}")
+        if p.get("persistent-keepalive"):
+            lines.append(f"PersistentKeepalive = {p['persistent-keepalive']}")
+    return "\n".join(lines) + "\n"
+
+
+def openvpn_inline(text: str) -> str:
+    """An exported .ovpn as one file: the files it names (ca, cert, key, tls-auth)
+    inlined, and NetworkManager's own user, group and scripts left out."""
+    out = []
+    for line in text.splitlines():
+        if _NM_ONLY.match(line):
+            continue
+        m = re.match(
+            r"^\s*(ca|cert|key|tls-auth|tls-crypt|tls-crypt-v2)\s+(['\"]?)(.+?)\2(?:\s+(\d))?\s*$",
+            line,
+        )
+        if m and not m.group(3).startswith("["):
+            opt, path, direction = m.group(1), m.group(3), m.group(4)
+            try:
+                body = Path(path).expanduser().read_text().strip()
+            except OSError as exc:
+                raise ProviderError(f"cannot read the {opt} file {path}: {exc}") from exc
+            if direction is not None:
+                out.append(f"key-direction {direction}")
+            out += [f"<{_FILE_OPTS[opt]}>", body, f"</{_FILE_OPTS[opt]}>"]
+            continue
+        # NetworkManager quotes every value ('204.13.164.252', 'tcp-client'):
+        # plain words for gluetun and for the checks here.
+        out.append(re.sub(r"'([^'\s]*)'", r"\1", line))
+    return "\n".join(out) + "\n"
+
+
+def nm_config(uuid: str) -> str:
+    """The config of one NetworkManager connection, ready for check_config."""
+    sources = {s.id: s for s in nm_sources()}
+    src = sources.get(uuid) or next((s for s in sources.values() if s.label == uuid), None)
+    if src is None:
+        raise ProviderError(f"NetworkManager has no WireGuard or OpenVPN connection {uuid!r}")
+    if src.detail == "OpenVPN":
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "export.ovpn"
+            proc = _run(["nmcli", "connection", "export", src.id, str(target)])
+            if proc.returncode != 0 or not target.exists():
+                raise ProviderError(
+                    f"NetworkManager did not export {src.label}: {proc.stderr.strip()}"
+                )
+            return openvpn_inline(target.read_text())
+    proc = _run(
+        [
+            "busctl",
+            "--json=short",
+            "call",
+            NM,
+            "/org/freedesktop/NetworkManager/Settings",
+            f"{NM}.Settings",
+            "GetConnectionByUuid",
+            "s",
+            src.id,
+        ]
+    )
+    if proc.returncode != 0:
+        raise ProviderError(f"NetworkManager: {proc.stderr.strip()}")
+    path = json.loads(proc.stdout)["data"][0]
+    call = ["busctl", "--json=short", "call", NM, path, f"{NM}.Settings.Connection"]
+    settings = _run([*call, "GetSettings"])
+    secret = _run([*call, "GetSecrets", "s", "wireguard"])
+    if secret.returncode != 0:
+        raise ProviderError(
+            f"NetworkManager did not hand over {src.label}'s key ({secret.stderr.strip()}); "
+            "it does in your desktop session"
+        )
+    return wireguard_from_nm(
+        json.loads(settings.stdout)["data"][0], json.loads(secret.stdout)["data"][0]
+    )
+
+
 def secret_name(lease: str) -> str:
     return f"kf-vpn-{lease[:12]}"
 
@@ -229,6 +422,13 @@ class VpnProvider(TunnelProvider):
 
     def config_server(self, text: str) -> tuple[str, int] | None:
         return server_of(text)
+
+    def config_sources(self, ctx) -> list[Lease]:  # noqa: ARG002
+        """Configs this machine has: NetworkManager's WireGuard and OpenVPN connections."""
+        return nm_sources()
+
+    def config_from(self, ctx, source: str) -> str:  # noqa: ARG002
+        return nm_config(source)
 
     def tunnel_spec(self, ctx, *, lease=None, country=None):
         text = secrets.lookup(lease, kind=CONFIG_KIND) if lease else None

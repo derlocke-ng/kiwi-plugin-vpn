@@ -25,7 +25,11 @@ kiwi-custodia new dev --exit home          # a box: TCP and UDP through the VPN
 kiwi-fox new work --exit home              # a browser on it
 ```
 
-In Kiwi Proxy: **New exit → Source: vpn → Config: Choose…**. Add as many VPN exits
+Or one NetworkManager already has: `kiwi-proxy module sources vpn` lists them,
+`kiwi-proxy add home --module vpn --from "My VPN"` takes one.
+
+In Kiwi Proxy: **New exit → Source: vpn → Config: Choose…** (a file) or
+**Import…** (NetworkManager). Add as many VPN exits
 as you like; each runs its own tunnel.
 
 - **For the internet (WAN).** A WireGuard config must route `0.0.0.0/0`; one that
