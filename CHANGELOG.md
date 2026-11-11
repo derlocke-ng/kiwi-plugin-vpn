@@ -6,6 +6,12 @@ latest tag matching `^v?[0-9]+(\.[0-9]+){0,3}$`.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-11
+
+### Fixed
+- 0.3.0's release was not published: `pyproject.toml` still said 0.2.2, and the
+  release check requires every version to agree. The module is 0.3.0's.
+
 ## [0.3.0] - 2026-11-11
 
 ### Changed
