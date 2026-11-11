@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import random
 import subprocess
+from pathlib import Path
 
 import pytest
 from kiwi_proxy import podman, secrets
@@ -57,9 +58,18 @@ def test_an_openvpn_config_with_its_keys_inside_is_accepted(module):
     assert module.check_config(OVPN) == "OpenVPN · 3 servers, TCP"
 
 
-def test_an_openvpn_config_asking_for_a_login_is_refused_for_now(module):
-    with pytest.raises(ProviderError, match="username and password"):
-        module.check_config(OVPN + "auth-user-pass\n")
+def test_an_openvpn_config_asking_for_a_login_takes_it_inline(module):
+    asking = OVPN + "auth-user-pass\n"
+    assert module.needs_login(asking) and not module.needs_login(OVPN)
+    with pytest.raises(ProviderError, match="--login USER"):
+        module.check_config(asking)
+    whole = module.with_login(asking, "me", "s3cret")
+    assert "auth-user-pass\n" not in whole.replace("<auth-user-pass>\n", "")
+    assert whole.endswith("<auth-user-pass>\nme\ns3cret\n</auth-user-pass>\n")
+    assert not module.needs_login(whole)
+    assert module.check_config(whole) == "OpenVPN · 3 servers, TCP"
+    with pytest.raises(ProviderError, match="one line each"):
+        module.with_login(asking, "me", "")
 
 
 def test_something_else_is_refused(module):
@@ -329,3 +339,39 @@ def test_an_expired_client_certificate_is_named(module, tmp_path):
     tomorrow = (dt.datetime.now(dt.UTC) + dt.timedelta(days=1)).date().isoformat()
     assert module.cert_expired(conf, now=later) == tomorrow  # -days 1: ends a day from now
     assert module.check_config(conf) == "OpenVPN · 3 servers, TCP"
+
+
+def test_an_openvpn_connection_brings_its_saved_login(module, monkeypatch):
+    import json
+
+    exported = "client\nremote '203.0.113.1' 1194\nauth-user-pass\n<ca>\nCA\n</ca>\n"
+    secret_ok = {"v": True}
+
+    def run(args, timeout=20):
+        out, rc = "", 0
+        if args[:2] == ["nmcli", "-t"]:
+            out = "u-2:vpn:work\n"
+        elif args[:3] == ["nmcli", "-g", "vpn.service-type"]:
+            out = module.OPENVPN_SERVICE
+        elif args[:2] == ["nmcli", "connection"] and args[2] == "export":
+            Path(args[-1]).write_text(exported)
+        elif args[:3] == ["nmcli", "-g", "vpn.data"]:
+            out = "connection-type = password, remote = 203.0.113.1, username = me"
+        elif "GetConnectionByUuid" in args:
+            out = json.dumps({"type": "o", "data": ["/org/freedesktop/NetworkManager/Settings/7"]})
+        elif "GetSecrets" in args:
+            if not secret_ok["v"]:
+                return subprocess.CompletedProcess(
+                    args, 1, stdout="", stderr="Insufficient privileges"
+                )
+            out = json.dumps(
+                {"data": [{"vpn": {"secrets": {"type": "a{ss}", "data": {"password": "s3cret"}}}}]}
+            )
+        return subprocess.CompletedProcess(args, rc, stdout=out, stderr="")
+
+    monkeypatch.setattr(module, "_run", run)
+    text = module.nm_config("work")
+    assert text.endswith("<auth-user-pass>\nme\ns3cret\n</auth-user-pass>\n")
+    assert module.check_config(text) == "OpenVPN · 1 server, UDP"
+    secret_ok["v"] = False  # no right to the password: the config still asks
+    assert module.needs_login(module.nm_config("work"))

@@ -45,7 +45,7 @@ MANIFEST = ProviderManifest(
     name="vpn",
     title="VPN",
     description="exit through your WireGuard or OpenVPN config",
-    version="0.5.1",
+    version="0.6.0",
     image=GLUETUN_IMAGE,
     auth="none",
     needs_account=True,
@@ -115,10 +115,10 @@ def check_config(text: str) -> str:
                 "(AllowedIPs = 0.0.0.0/0)"
             )
         return f"WireGuard · {_wg_values(text, 'Endpoint')[0]}"
-    if re.search(r"(?m)^\s*auth-user-pass\b", text) and "<auth-user-pass>" not in text:
+    if needs_login(text):
         raise ProviderError(
-            "the OpenVPN config asks for a username and password; "
-            "only configs with their keys inside are supported for now"
+            "the OpenVPN config asks for a username and password: give them "
+            "(--login USER, or the rows under Config in the app)"
         )
     if expired := cert_expired(text):
         raise ProviderError(
@@ -138,6 +138,25 @@ def server_of(text: str) -> tuple[str, int] | None:
         return (m.group(1), int(m.group(2))) if m else None
     m = re.search(r"(?m)^\s*remote\s+(\S+)(?:\s+(\d+))?", text)
     return (m.group(1), int(m.group(2) or 1194)) if m else None
+
+
+_BARE_LOGIN = re.compile(r"(?m)^\s*auth-user-pass\s*(\S.*)?$")
+
+
+def needs_login(text: str) -> bool:
+    """An OpenVPN config that asks for a username and password it does not carry."""
+    if kind_of(text) != "openvpn" or "<auth-user-pass>" in text:
+        return False
+    return bool(_BARE_LOGIN.search(text))
+
+
+def with_login(text: str, user: str, password: str) -> str:
+    """The config with its login inline (<auth-user-pass>, OpenVPN 2.6), so the
+    exit's secret is one whole file. The line asking for it goes."""
+    if not user or not password or "\n" in user + password:
+        raise ProviderError("a username and a password, one line each")
+    kept = [ln for ln in text.splitlines() if not _BARE_LOGIN.match(ln)]
+    return "\n".join([*kept, "<auth-user-pass>", user, password, "</auth-user-pass>"]) + "\n"
 
 
 def cert_expired(text: str, *, now: dt.datetime | None = None) -> str | None:
@@ -338,6 +357,45 @@ def openvpn_inline(text: str) -> str:
     return "\n".join(out) + "\n"
 
 
+def _nm_openvpn_login(uuid: str) -> tuple[str, str]:
+    data = _run(["nmcli", "-g", "vpn.data", "connection", "show", uuid]).stdout
+    m = re.search(r"(?:^|,)\s*username\s*=\s*([^,]+)", data)
+    user = m.group(1).strip() if m else ""
+    path = _run(
+        [
+            "busctl",
+            "--json=short",
+            "call",
+            NM,
+            "/org/freedesktop/NetworkManager/Settings",
+            f"{NM}.Settings",
+            "GetConnectionByUuid",
+            "s",
+            uuid,
+        ]
+    )
+    if path.returncode != 0:
+        return user, ""
+    obj = json.loads(path.stdout)["data"][0]
+    got = _run(
+        [
+            "busctl",
+            "--json=short",
+            "call",
+            NM,
+            obj,
+            f"{NM}.Settings.Connection",
+            "GetSecrets",
+            "s",
+            "vpn",
+        ]
+    )
+    if got.returncode != 0:
+        return user, ""
+    secrets_ = _variant(json.loads(got.stdout)["data"][0].get("vpn", {}).get("secrets", {})) or {}
+    return user, secrets_.get("password", "")
+
+
 def nm_config(uuid: str) -> str:
     """The config of one NetworkManager connection, ready for check_config."""
     sources = {s.id: s for s in nm_sources()}
@@ -352,7 +410,14 @@ def nm_config(uuid: str) -> str:
                 raise ProviderError(
                     f"NetworkManager did not export {src.label}: {proc.stderr.strip()}"
                 )
-            return openvpn_inline(target.read_text())
+            text = openvpn_inline(target.read_text())
+        if needs_login(text):
+            # Its username and saved password, when NetworkManager hands them over;
+            # otherwise the config still asks, and the app or --login does.
+            user, password = _nm_openvpn_login(src.id)
+            if user and password:
+                text = with_login(text, user, password)
+        return text
     proc = _run(
         [
             "busctl",
@@ -431,6 +496,12 @@ class VpnProvider(TunnelProvider):
 
     def config_server(self, text: str) -> tuple[str, int] | None:
         return server_of(text)
+
+    def needs_login(self, text: str) -> bool:
+        return needs_login(text)
+
+    def with_login(self, text: str, user: str, password: str) -> str:
+        return with_login(text, user, password)
 
     def config_sources(self, ctx) -> list[Lease]:  # noqa: ARG002
         """Configs this machine has: NetworkManager's WireGuard and OpenVPN connections."""

@@ -6,6 +6,16 @@ latest tag matching `^v?[0-9]+(\.[0-9]+){0,3}$`.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-11
+
+### Added
+- **OpenVPN configs that ask for a username and password** (most providers'):
+  the login goes inline (`<auth-user-pass>`, OpenVPN 2.6), so the exit's secret
+  is one whole config. `--login USER` in kiwi-proxy 0.16, rows in the app, and a
+  NetworkManager connection brings its saved login along. Checked on the VM
+  against a test OpenVPN server: the right login connects and passes traffic, a
+  wrong one fails with AUTH_FAILED.
+
 ## [0.5.1] - 2026-11-11
 
 ### Fixed

@@ -42,8 +42,9 @@ as you like; each runs its own tunnel.
   provider's per-server configs), but a key also in use on another computer, to
   the same server, breaks the same way.
 - **DNS and ad-blocking are kiwi-proxy's**, per exit, like every exit's.
-- An OpenVPN config that asks for a username and password, and a host SOCKS5
-  port on a VPN exit, are not supported yet.
+- **An OpenVPN config that asks for a username and password** (most providers'):
+  `--login USER` (asked for the password) or the rows in the app. The login is
+  kept inline in the exit's secret config; from NetworkManager it comes along.
 
 ## How it fits
 
