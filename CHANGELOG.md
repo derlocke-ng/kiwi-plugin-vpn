@@ -6,6 +6,14 @@ latest tag matching `^v?[0-9]+(\.[0-9]+){0,3}$`.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-11
+
+### Added
+- A host SOCKS5 port on a VPN exit: published on the exit's gluetun (the
+  namespace the gateway shares) and let in by gluetun's firewall. Needs
+  kiwi-proxy 0.13.0.
+- The exit is labelled by the server its config connects to.
+
 ## [0.3.1] - 2026-11-11
 
 ### Fixed

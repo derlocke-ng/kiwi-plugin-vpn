@@ -39,7 +39,7 @@ MANIFEST = ProviderManifest(
     name="vpn",
     title="VPN",
     description="exit through your WireGuard or OpenVPN config",
-    version="0.3.1",
+    version="0.4.0",
     image=GLUETUN_IMAGE,
     auth="none",
     needs_account=True,
@@ -120,6 +120,16 @@ def check_config(text: str) -> str:
     return f"OpenVPN · {len(remotes)} server{'s' if len(remotes) != 1 else ''}, {p}"
 
 
+def server_of(text: str) -> tuple[str, int] | None:
+    """The VPN server a config connects to, for the exit's label: WireGuard's
+    Endpoint, or OpenVPN's first remote."""
+    if kind_of(text) == "wireguard":
+        m = re.match(r"\[?([^\]]+?)\]?:(\d+)$", _wg_values(text, "Endpoint")[0])
+        return (m.group(1), int(m.group(2))) if m else None
+    m = re.search(r"(?m)^\s*remote\s+(\S+)(?:\s+(\d+))?", text)
+    return (m.group(1), int(m.group(2) or 1194)) if m else None
+
+
 def _resolve(host: str) -> str:
     try:
         ipaddress.ip_address(host)
@@ -163,6 +173,22 @@ def prepare(text: str, *, rng: random.Random | None = None) -> tuple[str, str, d
     return kind, "".join(out), extra
 
 
+def _host_port(lease: str, env: dict[str, str]) -> tuple[list[str], dict[str, str]]:
+    """An exit's host SOCKS5 port: published on this tunnel (the namespace the
+    gateway shares), let in by gluetun's firewall, and labelled so kiwi-proxy
+    starts the tunnel again when the port changes."""
+    from kiwi_proxy import exits, gateway, paths
+
+    try:
+        ex = exits.load(lease)
+    except exits.ExitError:
+        return [], {}
+    if not ex.expose:
+        return [], {}
+    env["FIREWALL_INPUT_PORTS"] = str(gateway.EXPOSE_PORT)
+    return [gateway.expose_publish(ex)], {paths.EXPOSE_LABEL: ex.expose.address}
+
+
 def secret_name(lease: str) -> str:
     return f"kf-vpn-{lease[:12]}"
 
@@ -201,6 +227,9 @@ class VpnProvider(TunnelProvider):
     def check_config(self, text: str) -> str:
         return check_config(text)
 
+    def config_server(self, text: str) -> tuple[str, int] | None:
+        return server_of(text)
+
     def tunnel_spec(self, ctx, *, lease=None, country=None):
         text = secrets.lookup(lease, kind=CONFIG_KIND) if lease else None
         if not text:
@@ -220,6 +249,7 @@ class VpnProvider(TunnelProvider):
         env = {"VPN_SERVICE_PROVIDER": "custom", "VPN_TYPE": kind, **QUIET, **extra}
         if kind == "openvpn":
             env["OPENVPN_CUSTOM_CONFIG"] = OPENVPN_TARGET
+        publish, labels = _host_port(lease, env)
         return ContainerSpec(
             name=ctx.container_name(lease),
             image=ctx.image,
@@ -236,7 +266,8 @@ class VpnProvider(TunnelProvider):
             security_opt=["no-new-privileges"],
             userns=None,
             tmpfs=["/tmp"],
-            labels={"kiwi-proxy.module": self.name, "kiwi-proxy.role": "tunnel"},
+            publish=publish,
+            labels={"kiwi-proxy.module": self.name, "kiwi-proxy.role": "tunnel", **labels},
         )
 
     def tunnel_ready(self, ctx, container):

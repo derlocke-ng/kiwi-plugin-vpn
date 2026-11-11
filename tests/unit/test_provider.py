@@ -155,3 +155,26 @@ def test_a_wireguard_key_up_on_another_exit_is_refused(provider, module, ctx, st
     stored["exit-4/vpnconfig"] = WG.replace("aGVsbG8gd29ybGQ=", "b3RoZXIga2V5")  # its own key
     monkeypatch.setattr(module.socket, "gethostbyname", lambda h: "198.51.100.4")
     assert provider.tunnel_spec(ctx, lease="exit-4").env["VPN_TYPE"] == "wireguard"
+
+
+def test_an_exit_is_labelled_by_its_vpn_server(module):
+    assert module.server_of(WG) == ("vpn.example.org", 51820)
+    assert module.server_of(OVPN) == ("203.0.113.1", 53)
+
+
+def test_a_host_socks5_port_is_published_on_the_tunnel(provider, ctx, stored):
+    from kiwi_proxy import exits
+    from kiwi_proxy.models import Endpoint, Expose
+
+    ex = exits.create("home", Endpoint(host="203.0.113.1", port=1194, module="vpn"))
+    ex.expose = Expose(port=1091)
+    exits.save(ex)
+    stored[f"{ex.id}/vpnconfig"] = OVPN
+    spec = provider.tunnel_spec(ctx, lease=ex.id)
+    assert spec.publish == ["127.0.0.1:1091:1081/tcp"]
+    assert spec.env["FIREWALL_INPUT_PORTS"] == "1081"
+    assert spec.labels["kiwi-proxy.expose"] == "127.0.0.1:1091"
+    other = exits.create("plain", Endpoint(host="203.0.113.2", port=1194, module="vpn"))
+    stored[f"{other.id}/vpnconfig"] = OVPN
+    plain = provider.tunnel_spec(ctx, lease=other.id)
+    assert plain.publish == [] and "FIREWALL_INPUT_PORTS" not in plain.env
