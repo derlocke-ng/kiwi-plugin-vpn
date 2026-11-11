@@ -6,6 +6,32 @@ latest tag matching `^v?[0-9]+(\.[0-9]+){0,3}$`.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-11
+
+### Changed
+- **One config per exit, TCP and UDP through the tunnel.** `kiwi-proxy add NAME
+  --module vpn --config FILE` takes your WireGuard `.conf` or OpenVPN `.ovpn`
+  (keys inside). It is checked (a full tunnel, for the internet) and kept as the
+  exit's secret. The exit's gluetun owns the namespace and the gateway joins it
+  (kiwi-proxy 0.11's tunnel exits), so a Kiwi Custodia box gets UDP too and
+  nothing leaves with the tunnel down. Checked on the dev VM with WireGuard and
+  OpenVPN-over-TCP configs, two exits at once.
+- gluetun's own DNS, public-IP and version lookups are off (kiwi resolves and
+  measures); its health check dials addresses and does not restart the tunnel.
+  A WireGuard endpoint given by name is resolved first, the config's MTU is
+  passed on, and OpenVPN servers on port 53 go last (gluetun uses the first).
+- An exit does not start while another VPN exit is up with the same WireGuard
+  key: a key works in one place at a time, and two tunnels with it take turns at
+  the server and break each other (seen on the dev VM).
+
+### Removed
+- The module-wide `vpn.json`, the `gluetun/` folder and the microsocks adapter
+  (its image, its smoke test and the images workflow). CI runs the unit tests.
+
+### Fixed
+- gluetun could not start: with every capability dropped it could not chown its
+  files ("operation not permitted"). It gets the six it needs, without NET_RAW.
+
 ## [0.2.2] - 2026-11-07
 
 ### Fixed

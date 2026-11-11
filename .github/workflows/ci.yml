@@ -1,0 +1,32 @@
+name: ci
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The module runs inside kiwi-proxy: test against its newest release, which
+      # is what kiwi installs beside this one.
+      - uses: actions/checkout@v4
+        with:
+          repository: derlocke-ng/kiwi-proxy
+          path: kiwi-proxy
+          fetch-depth: 0
+      - name: kiwi-proxy at its newest release tag
+        working-directory: kiwi-proxy
+        run: |
+          tag="$(git tag -l | grep -E '^v?[0-9]+(\.[0-9]+){0,3}$' | sort -V | tail -1)"
+          git checkout -q "$tag"
+          echo "kiwi-proxy $tag"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pydantic pytest ruff
+      - run: ruff check module tests && ruff format --check module tests
+      - run: bash -n install.sh
+      - run: python -m pytest tests/unit -q
+        env:
+          KIWI_PROXY_SRC: ${{ github.workspace }}/kiwi-proxy/src

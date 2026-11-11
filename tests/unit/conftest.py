@@ -35,6 +35,18 @@ pytest.importorskip(
 )
 
 
+@pytest.fixture(autouse=True)
+def _hermetic(tmp_path, monkeypatch):
+    """No test reads or writes the real exit store, keyring or runtime dir, and
+    none runs podman."""
+    for var in ("XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR"):
+        monkeypatch.setenv(var, str(tmp_path / var.lower()))
+    monkeypatch.setenv("KIWI_PROXY_SECRETS", "file")
+    from kiwi_proxy import podman
+
+    monkeypatch.setattr(podman, "ps", lambda all_=True, labels=None: [])
+
+
 def _load_module():
     path = REPO / "module" / "provider.py"
     spec = importlib.util.spec_from_file_location("kiwi_plugin_under_test", path)

@@ -1,112 +1,255 @@
-"""VPN provider: exit through a WireGuard/OpenVPN tunnel, using gluetun.
+"""VPN provider: exit through your own WireGuard or OpenVPN config, using gluetun.
 
-gluetun brings the tunnel up but does not offer SOCKS5, so this is a TunnelProvider:
-gluetun runs on the providers bridge, and a tiny microsocks adapter runs in gluetun's
-network namespace, exposing SOCKS5 that rides the tunnel and is reachable on the
-bridge at gluetun's address. Adapting the tunnel into plain SOCKS5 is the module's job.
+A VPN exit is a tunnel exit (``joins="tunnel"``): the exit's own gluetun owns the
+network namespace, gluetun's firewall is the kill switch and its route is the
+tunnel. The exit's gateway joins it, so whatever runs on the exit — a Kiwi
+Custodia box, a browser — gets TCP and UDP through the VPN, and nothing leaves
+any other way.
 
-A VPN subscription is required. Its settings — the service provider, the protocol,
-the keys/credentials, server selection — are gluetun's own environment variables and
-files, given once and kept in the module's state directory, not per exit:
+Each exit has its own config, a WireGuard ``.conf`` or an OpenVPN ``.ovpn``,
+checked here when the exit is added (``kiwi-proxy add NAME --module vpn --config
+FILE``) and kept as the exit's secret. On start it is prepared for gluetun's
+custom provider (a WireGuard endpoint given by name is resolved; OpenVPN servers
+on port 53 go last, since gluetun connects to the first ``remote``) and handed
+over as a podman secret. gluetun's own lookups are off — its DNS server, its
+public-IP check, its version check: the exit's DNS and blocklists are kiwi's,
+and kiwi measures the exit itself.
 
-    ~/.local/share/kiwi-proxy/modules-state/vpn/
-        vpn.json          {"VPN_SERVICE_PROVIDER": "mullvad", "VPN_TYPE": "wireguard", ...}
-        gluetun/          mounted read-only at /gluetun (e.g. a wireguard.conf)
-
-See the README. gluetun documents every variable:
-https://github.com/qdm12/gluetun-wiki
+A VPN exit is for the internet (WAN): a WireGuard config must route 0.0.0.0/0.
 """
 
 from __future__ import annotations
 
-import json
+import ipaddress
+import random
+import re
+import socket
 
-from kiwi_proxy.models import ContainerSpec, Lease, ProviderManifest
-from kiwi_proxy.providers.base import TunnelProvider
+from kiwi_proxy import podman, secrets
+from kiwi_proxy.models import ContainerSpec, ProviderManifest
+from kiwi_proxy.providers.base import ProviderError, TunnelProvider
 
 GLUETUN_IMAGE = "docker.io/qmcgaw/gluetun:latest"
-SOCKS_PORT = 1080
-CONFIG_FILE = "vpn.json"
+CONFIG_KIND = "vpnconfig"
+WIREGUARD_TARGET = "/gluetun/wireguard/wg0.conf"
+OPENVPN_TARGET = "/gluetun/custom.conf"
+READY_MARKS = ("Initialization Sequence Completed", "wireguard setup is complete")
 
 MANIFEST = ProviderManifest(
     name="vpn",
-    title="VPN (gluetun)",
-    description="exit through a WireGuard/OpenVPN tunnel",
-    version="0.2.2",
+    title="VPN",
+    description="exit through your WireGuard or OpenVPN config",
+    version="0.3.0",
     image=GLUETUN_IMAGE,
-    socks_port=SOCKS_PORT,
     auth="none",
     needs_account=True,
     requires=[],
-    notes="needs a VPN subscription; configure under modules-state/vpn/ (see README)",
+    joins="tunnel",
+    notes="one config per exit: kiwi-proxy add NAME --module vpn --config FILE",
 )
 
+# gluetun's own lookups, off: kiwi resolves (per exit, with its blocklists) and
+# measures. Its health check dials addresses, not names, and a failed check does
+# not restart the tunnel under the exit's members.
+QUIET = {
+    "DNS_SERVER": "off",
+    "DNS_UPSTREAM_RESOLVER_TYPE": "plain",
+    "DNS_UPSTREAM_PLAIN_ADDRESSES": "1.1.1.1:53",
+    "BLOCK_MALICIOUS": "off",
+    "BLOCK_ADS": "off",
+    "PUBLICIP_ENABLED": "off",
+    "VERSION_INFORMATION": "off",
+    "HEALTH_RESTART_VPN": "off",
+    "HEALTH_TARGET_ADDRESSES": "1.1.1.1:443,9.9.9.9:443",
+}
 
+
+# ------------------------------------------------------------------ the config
+def kind_of(text: str) -> str:
+    if re.search(r"(?mi)^\s*\[Interface\]", text):
+        return "wireguard"
+    if re.search(r"(?m)^\s*remote\s+\S+", text) and re.search(
+        r"(?m)^\s*(client|tls-client)\b", text
+    ):
+        return "openvpn"
+    raise ProviderError("not a WireGuard (.conf) or OpenVPN (.ovpn) client config")
+
+
+def _wg_values(text: str, key: str) -> list[str]:
+    out: list[str] = []
+    for m in re.finditer(rf"(?mi)^\s*{key}\s*=\s*(.+?)\s*$", text):
+        out += [v.strip() for v in m.group(1).split(",") if v.strip()]
+    return out
+
+
+def _full_tunnel(allowed: list[str]) -> bool:
+    for net in allowed:
+        try:
+            n = ipaddress.ip_network(net, strict=False)
+        except ValueError:
+            continue
+        if n.version == 4 and n.prefixlen == 0:
+            return True
+    return False
+
+
+def check_config(text: str) -> str:
+    """What a config is, in a few words, or a ProviderError saying why it cannot be
+    a VPN exit. Nothing is resolved or started."""
+    kind = kind_of(text)
+    if kind == "wireguard":
+        for key in ("PrivateKey", "PublicKey", "Endpoint"):
+            if not _wg_values(text, key):
+                raise ProviderError(f"the WireGuard config has no {key}")
+        allowed = _wg_values(text, "AllowedIPs")
+        if not _full_tunnel(allowed):
+            reach = ", ".join(allowed) or "nothing"
+            raise ProviderError(
+                f"this config only reaches {reach}; a VPN exit needs a full tunnel "
+                "(AllowedIPs = 0.0.0.0/0)"
+            )
+        return f"WireGuard · {_wg_values(text, 'Endpoint')[0]}"
+    if re.search(r"(?m)^\s*auth-user-pass\b", text) and "<auth-user-pass>" not in text:
+        raise ProviderError(
+            "the OpenVPN config asks for a username and password; "
+            "only configs with their keys inside are supported for now"
+        )
+    remotes = re.findall(r"(?m)^\s*remote\s+\S+", text)
+    proto = re.search(r"(?m)^\s*proto\s+(\w+)", text)
+    p = proto.group(1).upper().split("-")[0] if proto else "UDP"
+    return f"OpenVPN · {len(remotes)} server{'s' if len(remotes) != 1 else ''}, {p}"
+
+
+def _resolve(host: str) -> str:
+    try:
+        ipaddress.ip_address(host)
+        return host
+    except ValueError:
+        pass
+    try:
+        return socket.gethostbyname(host)
+    except OSError as exc:
+        raise ProviderError(f"cannot resolve the VPN server {host!r}: {exc}") from exc
+
+
+def prepare(text: str, *, rng: random.Random | None = None) -> tuple[str, str, dict[str, str]]:
+    """(kind, the config as gluetun gets it, extra gluetun settings)."""
+    kind = kind_of(text)
+    extra: dict[str, str] = {}
+    if kind == "wireguard":
+
+        def endpoint(m: re.Match[str]) -> str:
+            return f"{m.group(1)}{_resolve(m.group(2))}:{m.group(3)}"
+
+        text = re.sub(r"(?mi)^(\s*Endpoint\s*=\s*)([^:\s\[\]]+):(\d+)", endpoint, text)
+        if mtu := _wg_values(text, "MTU"):
+            extra["WIREGUARD_MTU"] = re.sub(r"\D", "", mtu[0])
+        return kind, text, extra
+    lines = text.splitlines(keepends=True)
+    is_remote = [bool(re.match(r"\s*remote\s+\S+", ln)) for ln in lines]
+    remotes = [ln for ln, r in zip(lines, is_remote, strict=True) if r]
+
+    def port_of(ln: str) -> str:
+        parts = ln.split()
+        return parts[2] if len(parts) > 2 else "1194"
+
+    first = [ln for ln in remotes if port_of(ln) != "53"]
+    (rng or random.Random()).shuffle(first)
+    ordered = first + [ln for ln in remotes if port_of(ln) == "53"]
+    at = is_remote.index(True)
+    out = [ln for ln, r in zip(lines[:at], is_remote[:at], strict=True) if not r]
+    out += ordered
+    out += [ln for ln, r in zip(lines[at:], is_remote[at:], strict=True) if not r]
+    return kind, "".join(out), extra
+
+
+def secret_name(lease: str) -> str:
+    return f"kf-vpn-{lease[:12]}"
+
+
+def wireguard_key(text: str) -> str | None:
+    keys = _wg_values(text, "PrivateKey") if kind_of(text) == "wireguard" else []
+    return keys[0] if keys else None
+
+
+def _key_in_use(lease: str, key: str) -> str | None:
+    """The name of another VPN exit that is up with this WireGuard key. A key
+    works in one place at a time: two tunnels with it take turns at the server
+    and break each other."""
+    from kiwi_proxy import exits, paths
+
+    for c in podman.ps(all_=False, labels={paths.MODULE_LABEL: "vpn", paths.ROLE_LABEL: "tunnel"}):
+        other = (c.get("Labels") or {}).get(paths.LEASE_LABEL)
+        if not other or other == lease:
+            continue
+        text = secrets.lookup(other, kind=CONFIG_KIND)
+        try:
+            if text and wireguard_key(text) == key:
+                return exits.load(other).name
+        except (ProviderError, exits.ExitError):
+            continue
+    return None
+
+
+# -------------------------------------------------------------------- provider
 class VpnProvider(TunnelProvider):
     manifest = MANIFEST
-    # A tunnel handshake plus the public-IP check gluetun does can take a while.
+    # A handshake, and for OpenVPN a TLS exchange, can take a while.
     ready_timeout = 120.0
+    log_marker = "[vpn]"
 
-    def _config(self, ctx) -> dict:
-        path = ctx.state_dir / CONFIG_FILE
-        if not path.exists():
-            return {}
-        try:
-            return json.loads(path.read_text())
-        except json.JSONDecodeError:
-            return {}
+    def check_config(self, text: str) -> str:
+        return check_config(text)
 
     def tunnel_spec(self, ctx, *, lease=None, country=None):
-        cfg = self._config(ctx)
-        env = {
-            "VPN_SERVICE_PROVIDER": str(cfg.get("VPN_SERVICE_PROVIDER", "custom")),
-            "VPN_TYPE": str(cfg.get("VPN_TYPE", "wireguard")),
-        }
-        # Any other UPPER_CASE key in the config is passed straight to gluetun.
-        for key, value in cfg.items():
-            if key.isupper():
-                env[key] = str(value)
-        # A lease/country selects the server; gluetun expects its own naming
-        # (e.g. a full country name), so it is passed through verbatim.
-        target = lease or country
-        if target:
-            env.setdefault("SERVER_COUNTRIES", str(target))
-
-        gluetun_dir = ctx.state_dir / "gluetun"
-        volumes = []
-        if gluetun_dir.exists():
-            # Read-only, and a bind mount rather than env, so keys never show up in
-            # `podman inspect`.
-            volumes.append((str(gluetun_dir), "/gluetun", "ro,z"))
-
+        text = secrets.lookup(lease, kind=CONFIG_KIND) if lease else None
+        if not text:
+            raise ProviderError(
+                "this VPN exit has no config; add one: "
+                "kiwi-proxy add NAME --module vpn --config FILE"
+            )
+        if (key := wireguard_key(text)) and (other := _key_in_use(lease, key)):
+            raise ProviderError(
+                f"exit {other!r} is up with the same WireGuard key; a key works in "
+                "one place at a time (take it down, or give this exit its own config)"
+            )
+        kind, prepared, extra = prepare(text)
+        name = secret_name(lease)
+        podman.secret_set(name, prepared)
+        target = WIREGUARD_TARGET if kind == "wireguard" else OPENVPN_TARGET
+        env = {"VPN_SERVICE_PROVIDER": "custom", "VPN_TYPE": kind, **QUIET, **extra}
+        if kind == "openvpn":
+            env["OPENVPN_CUSTOM_CONFIG"] = OPENVPN_TARGET
         return ContainerSpec(
             name=ctx.container_name(lease),
             image=ctx.image,
             network=ctx.network,
             env=env,
-            volumes=volumes,
+            secrets=[(name, target)],
             devices=["/dev/net/tun"],
+            # NET_ADMIN for the tunnel and its firewall; gluetun also chowns and
+            # writes its own files and switches users. Measured on the dev VM with
+            # WireGuard and OpenVPN. No NET_RAW: on the providers bridge it would
+            # let a compromised tunnel ARP-spoof its neighbours.
             cap_drop=["all"],
-            cap_add=["NET_ADMIN"],  # bring the tunnel interface up and route through it
+            cap_add=["NET_ADMIN", "CHOWN", "DAC_OVERRIDE", "FOWNER", "SETUID", "SETGID"],
             security_opt=["no-new-privileges"],
-            # Container-root, so gluetun can configure the tun device — and so the
-            # adapter (keep-id) joining this netns matches the proven kiwi-proxy
-            # gateway(None)+browser(keep-id) namespace pairing.
             userns=None,
-            tmpfs=["/tmp", "/run"],
+            tmpfs=["/tmp"],
             labels={"kiwi-proxy.module": self.name, "kiwi-proxy.role": "tunnel"},
         )
 
     def tunnel_ready(self, ctx, container):
-        from kiwi_proxy import podman
+        logs = podman.logs(container, tail=200)
+        return any(mark in logs for mark in READY_MARKS)
 
-        logs = podman.logs(container, tail=200).lower()
-        # gluetun prints one of these once the tunnel is established.
-        return "healthy" in logs or "public ip address is" in logs
+    def down(self, ctx, *, lease=None):
+        super().down(ctx, lease=lease)
+        if lease:
+            podman.secret_rm(secret_name(lease))
 
     def leases(self, ctx):
-        cfg = self._config(ctx)
-        return [Lease(id=str(c), label=str(c)) for c in cfg.get("leases", [])]
+        return []  # one config per exit, not a list to choose from
 
 
 PROVIDER = VpnProvider()
