@@ -56,7 +56,10 @@ MANIFEST = ProviderManifest(
 
 # gluetun's own lookups, off: kiwi resolves (per exit, with its blocklists) and
 # measures. Its health check dials addresses, not names, and a failed check does
-# not restart the tunnel under the exit's members.
+# not restart the tunnel under the exit's members: measured on the dev VM
+# (2026-11-11), gluetun's startup check failed on a WireGuard and an OpenVPN
+# tunnel that carried traffic fine, and with restarts on the OpenVPN one never
+# settled. Recovery, when it comes, belongs to kiwi's own measurement.
 QUIET = {
     "DNS_SERVER": "off",
     "DNS_UPSTREAM_RESOLVER_TYPE": "plain",
