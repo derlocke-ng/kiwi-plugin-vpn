@@ -127,6 +127,83 @@ def test_wireguard_goes_where_gluetun_reads_it(provider, module, ctx, stored, mo
     assert spec.env["VPN_TYPE"] == "wireguard" and spec.env["WIREGUARD_MTU"] == "1352"
 
 
+def _path(limit: int, *, tells: bool = True, answers: bool = True):
+    """A fake path to the server that takes packets up to `limit` bytes; the
+    kernel names the limit after the first too-big packet when `tells`."""
+    seen: list[int] = []
+
+    def fits(ip, size):
+        seen.append(size)
+        ok = answers and size <= limit
+        return ok, (limit if tells and not ok and answers else None)
+
+    return fits, seen
+
+
+def test_the_path_mtu_comes_from_what_the_kernel_says(module):
+    fits, seen = _path(1376)
+    assert module.path_mtu("198.51.100.4", 1412, fits=fits) == 1376
+    assert seen == [1412, 1376]  # one try, the kernel's answer checked: no search
+
+
+def test_the_path_mtu_is_searched_when_nobody_says(module):
+    fits, seen = _path(1376, tells=False)
+    assert module.path_mtu("198.51.100.4", 1412, fits=fits) == 1376
+    assert len(seen) < 14
+
+
+def test_ping_names_the_path_mtu_two_ways(module):
+    assert module.told_mtu("From 192.0.0.2 icmp_seq=1 Frag needed and DF set (mtu = 1452)") == 1452
+    assert module.told_mtu("ping: local error: message too long, mtu=1376") == 1376
+    assert module.told_mtu("ping: sendmsg: Message too long") is None
+
+
+def test_a_path_that_fits_takes_one_try(module):
+    fits, seen = _path(1500)
+    assert module.path_mtu("198.51.100.4", 1412, fits=fits) == 1412 and seen == [1412]
+
+
+def test_a_server_that_does_not_answer_pings_tells_nothing(module):
+    fits, _seen = _path(1376, answers=False)
+    assert module.path_mtu("198.51.100.4", 1412, fits=fits) is None
+
+
+def test_a_config_mtu_too_big_for_the_path_is_fitted(module):
+    text = WG.replace("vpn.example.org", "198.51.100.4")
+    fits, _ = _path(1376)
+
+    def measured(ip, want):
+        return module.path_mtu(ip, want, fits=fits)
+
+    assert module.fit_mtu(text, measure=measured) == (1316, 1352, 1376)  # 1376 - 60
+    six = text.replace("198.51.100.4:51820", "[2001:db8::4]:51820")
+    assert module.fit_mtu(six, measure=measured) == (1296, 1352, 1376)  # IPv6 adds 80
+    roomy, _ = _path(1500)
+    assert module.fit_mtu(text, measure=lambda ip, w: module.path_mtu(ip, w, fits=roomy)) is None
+    no_mtu = "\n".join(ln for ln in text.splitlines() if not ln.startswith("MTU"))
+    assert module.fit_mtu(no_mtu, measure=measured) is None  # gluetun finds the path's own
+
+
+def test_the_tunnel_gets_the_fitted_mtu_and_says_so(provider, module, ctx, stored, monkeypatch):
+    monkeypatch.setattr(module.socket, "gethostbyname", lambda h: "198.51.100.4")
+    fits, _ = _path(1376)
+    monkeypatch.setattr(module, "_ping_fits", fits)
+    stored["exit-9/vpnconfig"] = WG
+    spec = provider.tunnel_spec(ctx, lease="exit-9")
+    assert spec.env["WIREGUARD_MTU"] == "1316"
+    assert "MTU = 1316" in stored["kf-vpn-exit-9"]  # what gluetun reads
+    assert "MTU = 1352" in stored["exit-9/vpnconfig"]  # the exit's own config stays
+    assert spec.labels[module.NOTE_LABEL] == "MTU 1316, fitted to the path (config 1352)"
+    assert "packets of 1376 bytes" in spec.labels[module.NOTE_HELP_LABEL]
+
+
+def test_a_tunnel_whose_mtu_fits_has_no_note(provider, module, ctx, stored, monkeypatch):
+    monkeypatch.setattr(module.socket, "gethostbyname", lambda h: "198.51.100.4")
+    stored["exit-10/vpnconfig"] = WG
+    spec = provider.tunnel_spec(ctx, lease="exit-10")  # the server does not answer pings
+    assert spec.env["WIREGUARD_MTU"] == "1352" and module.NOTE_LABEL not in spec.labels
+
+
 def test_an_exit_without_a_config_says_how_to_give_one(provider, ctx, stored):
     with pytest.raises(ProviderError, match="--config FILE"):
         provider.tunnel_spec(ctx, lease="exit-3")

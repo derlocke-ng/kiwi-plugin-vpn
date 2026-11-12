@@ -47,6 +47,13 @@ def _hermetic(tmp_path, monkeypatch):
     monkeypatch.setattr(podman, "ps", lambda all_=True, labels=None: [])
 
 
+@pytest.fixture(autouse=True)
+def _no_ping(module, monkeypatch):
+    """No test pings anything: by default a VPN server here does not answer pings,
+    so a config's MTU is used as it is. Tests of the fit give their own."""
+    monkeypatch.setattr(module, "_ping_fits", lambda ip, size: (False, None))
+
+
 def _load_module():
     path = REPO / "module" / "provider.py"
     spec = importlib.util.spec_from_file_location("kiwi_plugin_under_test", path)

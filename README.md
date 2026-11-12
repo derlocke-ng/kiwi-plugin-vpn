@@ -63,6 +63,17 @@ public-IP and version lookups are off; kiwi-proxy measures the exit itself. If
 the tunnel's container ends, the exit is taken down (fail closed) and the next
 start brings a new one.
 
+**The MTU, fitted to the path.** A WireGuard config's `MTU` is right for the
+network it was made on. Before the tunnel starts, the module pings the server
+with packets that may not be split (two pings when the config fits, a few more
+when it does not). When the config's MTU plus WireGuard's 60 bytes (80 over IPv6)
+is more than the path takes, the tunnel gets the largest MTU that fits, and Kiwi
+Proxy shows it on the exit ("MTU 1316, fitted to the path (config 1352)"); the
+stored config stays as it is. A config without an `MTU` line leaves it to
+gluetun, which finds the path's own. A server that does not answer pings keeps
+the config's MTU. Seen on the dev VM, whose way out is a VPN gateway taking
+1376-byte packets: MTU 1352 there failed every download, the fitted 1316 none.
+
 ## Development
 
 ```sh

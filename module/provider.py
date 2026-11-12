@@ -45,7 +45,7 @@ MANIFEST = ProviderManifest(
     name="vpn",
     title="VPN",
     description="exit through your WireGuard or OpenVPN config",
-    version="0.6.1",
+    version="0.7.0",
     image=GLUETUN_IMAGE,
     auth="none",
     needs_account=True,
@@ -228,6 +228,106 @@ def prepare(text: str, *, rng: random.Random | None = None) -> tuple[str, str, d
     out += ordered
     out += [ln for ln, r in zip(lines[at:], is_remote[at:], strict=True) if not r]
     return kind, "".join(out), extra
+
+
+# ------------------------------------------------------------- the path's MTU
+# WireGuard wraps each packet in UDP: an IPv4 (20) or IPv6 (40) header, 8 for UDP
+# and 32 of its own. A config's MTU is right for the network it was made on; on
+# another (the dev VM sits behind a VPN gateway whose path takes 1376 bytes) the
+# wrapped packets are too big, get lost, and pages stall while small exchanges
+# (handshakes, DNS) still pass. Measured on the VM, 2026-11-13: MTU 1352 there
+# failed every download, 1280 none.
+WG_OVERHEAD = {4: 60, 6: 80}
+_PING_HEADERS = {4: 28, 6: 48}  # IP + ICMP: what ping's -s leaves out
+_PING_FLOOR = {4: 576, 6: 1280}
+NOTE_LABEL = "kiwi-proxy.note"
+NOTE_HELP_LABEL = "kiwi-proxy.note-help"
+
+
+def _ping_fits(ip: str, size: int) -> tuple[bool, int | None]:
+    """Does a `size`-byte packet reach `ip` without being fragmented? And the
+    path MTU the kernel names when it learnt a smaller one (after the first of the
+    two pings came back as "fragmentation needed")."""
+    v = ipaddress.ip_address(ip).version
+    if not shutil.which("ping"):
+        raise OSError("no ping here")
+    # Two pings, 0.2 s apart, one second each to answer, never fragmented.
+    args = f"ping -{v} -n -c 2 -i 0.2 -W 1 -M do -s {size - _PING_HEADERS[v]} {ip}".split()
+    proc = subprocess.run(  # noqa: S603
+        args,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+    return proc.returncode == 0, told_mtu(proc.stdout + proc.stderr)
+
+
+def told_mtu(out: str) -> int | None:
+    """The path MTU in ping's words: "Frag needed and DF set (mtu = 1452)" from a
+    router, or "local error: message too long, mtu=1376" from the kernel."""
+    found = re.search(r"mtu\s*=\s*(\d+)", out)
+    return int(found.group(1)) if found else None
+
+
+def path_mtu(ip: str, want: int, *, fits=None) -> int | None:
+    """The largest packet, up to `want`, that reaches `ip` in one piece; None when
+    that cannot be told (no ping here, or the server does not answer pings)."""
+    fits = fits or _ping_fits
+    try:
+        v = ipaddress.ip_address(ip).version
+        ok, told = fits(ip, want)
+        if ok:
+            return want
+        floor = _PING_FLOOR[v]
+        if told and floor <= told < want and fits(ip, told)[0]:
+            return told
+        if not fits(ip, floor)[0]:
+            return None
+        lo, hi = floor, want  # lo gets through, hi does not
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            lo, hi = (mid, hi) if fits(ip, mid)[0] else (lo, mid)
+        return lo
+    except (ValueError, OSError, subprocess.SubprocessError):
+        return None
+
+
+def fit_mtu(text: str, *, measure=None) -> tuple[int, int, int] | None:
+    """(the MTU to use, the config's, the path's) when a WireGuard config's MTU is
+    too big for the path from here to its server. None when it fits, when the
+    config names none (gluetun then finds the path's own), or when the path cannot
+    be measured (the config's MTU is used as it is)."""
+    if kind_of(text) != "wireguard" or not (given := _wg_values(text, "MTU")):
+        return None
+    digits = re.sub(r"\D", "", given[0])
+    server = server_of(text)
+    if not digits or not server:
+        return None
+    try:
+        ip = ipaddress.ip_address(server[0])
+    except ValueError:
+        return None
+    mtu, over = int(digits), WG_OVERHEAD[ip.version]
+    path = (measure or path_mtu)(str(ip), mtu + over)
+    if path is None or path >= mtu + over:
+        return None
+    return path - over, mtu, path
+
+
+def mtu_note(fit: tuple[int, int, int]) -> dict[str, str]:
+    """What Kiwi Proxy shows on the exit while this tunnel runs: a few words, and
+    the why behind its (?)."""
+    used, given, path = fit
+    return {
+        NOTE_LABEL: f"MTU {used}, fitted to the path (config {given})",
+        NOTE_HELP_LABEL: (
+            f"The config's MTU, {given}, is too big for the way from this computer "
+            f"to the VPN server: it takes packets of {path} bytes, and WireGuard adds "
+            f"{path - used} to each. Bigger packets got lost, so pages stalled. The "
+            f"tunnel uses {used}, the largest that fits; your config stays as it is."
+        ),
+    }
 
 
 def _host_port(lease: str, env: dict[str, str]) -> tuple[list[str], dict[str, str]]:
@@ -545,6 +645,11 @@ class VpnProvider(TunnelProvider):
                 "this exit a config of its own)"
             )
         kind, prepared, extra = prepare(text)
+        note: dict[str, str] = {}
+        if kind == "wireguard" and (fit := fit_mtu(prepared)):
+            extra["WIREGUARD_MTU"] = str(fit[0])
+            prepared = re.sub(r"(?mi)^(\s*MTU\s*=\s*).*$", rf"\g<1>{fit[0]}", prepared)
+            note = mtu_note(fit)
         name = secret_name(lease)
         podman.secret_set(name, prepared)
         target = WIREGUARD_TARGET if kind == "wireguard" else OPENVPN_TARGET
@@ -552,6 +657,7 @@ class VpnProvider(TunnelProvider):
         if kind == "openvpn":
             env["OPENVPN_CUSTOM_CONFIG"] = OPENVPN_TARGET
         publish, labels = _host_port(lease, env)
+        labels.update(note)
         return ContainerSpec(
             name=ctx.container_name(lease),
             image=ctx.image,

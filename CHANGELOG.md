@@ -6,6 +6,20 @@ latest tag matching `^v?[0-9]+(\.[0-9]+){0,3}$`.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-13
+
+### Added
+- **A WireGuard MTU too big for the path is fitted.** Before the tunnel starts,
+  the module pings the server with packets that may not be split; when the
+  config's MTU plus WireGuard's 60 bytes (80 over IPv6) is more than the path
+  takes, the tunnel uses the largest that fits and says so on the exit (Kiwi
+  Proxy 0.17 shows it: "MTU 1316, fitted to the path (config 1352)", the why
+  behind a (?)). The stored config is unchanged; a config without an MTU stays
+  gluetun's (it finds the path's own); a server that does not answer pings keeps
+  the config's. Measured on the dev VM, whose way out takes 1376-byte packets:
+  MTU 1352 there failed every download (TLS reset, handshakes fine), 1280 and
+  the fitted 1316 none. A path that fits costs two pings (0.2 s).
+
 ## [0.6.1] - 2026-11-11
 
 ### Fixed
