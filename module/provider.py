@@ -56,10 +56,13 @@ MANIFEST = ProviderManifest(
 
 # gluetun's own lookups, off: kiwi resolves (per exit, with its blocklists) and
 # measures. Its health check dials addresses, not names, and a failed check does
-# not restart the tunnel under the exit's members: measured on the dev VM
-# (2026-11-11), gluetun's startup check failed on a WireGuard and an OpenVPN
-# tunnel that carried traffic fine, and with restarts on the OpenVPN one never
-# settled. Recovery, when it comes, belongs to kiwi's own measurement.
+# not restart the VPN: none is needed. Measured on the dev VM (2026-11-13), the
+# server unreachable for three minutes: WireGuard came back 2 s and OpenVPN (its
+# own ping-restart) 14 s after it answered again, by themselves, in the same
+# namespace, nothing leaking meanwhile; with restarts on, WireGuard restarted
+# every 6 s through the outage and OpenVPN came back later (26 s). The startup
+# check failures seen on 2026-11-11 were an MTU too big for the VM's path (now
+# fitted). kiwi-proxy (0.18) asks the tunnel itself whether it passes traffic.
 QUIET = {
     "DNS_SERVER": "off",
     "DNS_UPSTREAM_RESOLVER_TYPE": "plain",

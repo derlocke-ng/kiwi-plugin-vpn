@@ -74,6 +74,16 @@ gluetun, which finds the path's own. A server that does not answer pings keeps
 the config's MTU. Seen on the dev VM, whose way out is a VPN gateway taking
 1376-byte packets: MTU 1352 there failed every download, the fitted 1316 none.
 
+**When the server goes away.** WireGuard and OpenVPN reconnect by themselves, in
+the same tunnel, so a Custodia box or a browser on the exit keeps its place and
+nothing leaves meanwhile (the kill switch holds). On the dev VM, with the server
+unreachable for three minutes: WireGuard was back 2 s after it answered again,
+OpenVPN (its `keepalive`/ping-restart) 14 s. gluetun's own VPN restart stays off:
+it adds nothing here (WireGuard restarted every 6 s through the outage). Kiwi
+Proxy says "VPN not answering" on the exit meanwhile (kiwi-proxy 0.18). Only when
+the tunnel's container itself ends is the exit taken down (fail closed); the next
+start brings a new one.
+
 ## Development
 
 ```sh
